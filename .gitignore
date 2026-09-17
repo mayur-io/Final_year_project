@@ -1,9 +1,16 @@
 # Dependencies and build output
+/node_modules/
+/.next/
+/out/
 /splato/node_modules/
 /splato/.next/
 /splato/out/
 
 # Local configuration and runtime data
+/.env*
+/storage/
+/keys.txt
+/.vercel/
 /splato/.env*
 /splato/storage/
 /splato/keys.txt
