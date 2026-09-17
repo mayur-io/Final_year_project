@@ -1,0 +1,13 @@
+# Dependencies and build output
+/splato/node_modules/
+/splato/.next/
+/splato/out/
+
+# Local configuration and runtime data
+/splato/.env*
+/splato/storage/
+/splato/keys.txt
+/splato/.vercel/
+
+# Tooling output
+*.tsbuildinfo
