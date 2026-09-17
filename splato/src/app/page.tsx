@@ -2,6 +2,8 @@ import WorkspaceLayout from "@/components/layout/WorkspaceLayout";
 import ProjectDashboard from "@/components/dashboard/ProjectDashboard";
 import { prisma } from "@/lib/prisma";
 
+export const dynamic = "force-dynamic";
+
 export default async function Home() {
   const projects = await prisma.project.findMany({
     where: {
