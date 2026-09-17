@@ -1,0 +1,52 @@
+generator client {
+  provider = "prisma-client"
+  output   = "../src/lib/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum AssetType {
+  IMAGE
+  VIDEO
+  MESH
+  POINT_CLOUD
+  GAUSSIAN_SPLAT
+  UNKNOWN
+}
+
+enum MediaWorkspace {
+  UPLOADER
+  VIEWER_360
+}
+
+model Project {
+  id          String   @id @default(cuid())
+  name        String
+  description String?
+  status      String   @default("CREATED")
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  media Media[]
+  isArchived Boolean   @default(false)
+
+archivedAt DateTime?
+}
+
+model Media {
+  id          String   @id @default(cuid())
+  filename    String
+  filepath    String
+  filesize    Int
+  mimetype    String
+  
+   assetType AssetType @default(UNKNOWN)
+  workspace MediaWorkspace @default(UPLOADER)
+
+  createdAt   DateTime @default(now())
+
+  projectId   String
+  project     Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+}

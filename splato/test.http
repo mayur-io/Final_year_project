@@ -1,0 +1,9 @@
+POST http://localhost:3000/api/projects/abc123/media
+Content-Type: application/json
+
+{
+  "filename": "test.mp4",
+  "filepath": "C:/Videos/test.mp4",
+  "filesize": 12345,
+  "mimetype": "video/mp4"
+}
