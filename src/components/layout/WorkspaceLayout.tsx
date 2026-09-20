@@ -4,6 +4,8 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { ReactNode } from "react";
 
+import EngineStatus from "@/components/engine/EngineStatus";
+
 type Props = {
   children: ReactNode;
 };
@@ -13,7 +15,13 @@ export default function WorkspaceLayout({ children }: Props) {
   return (
     <div className="min-h-screen flex bg-background text-foreground">
       <aside className="w-64 shrink-0 border-r border-white/10 px-8 py-10">
-        <h1 className="text-3xl font-bold mb-10">Splato</h1>
+        <div className="mb-8 flex items-center justify-between">
+          <h1 className="text-3xl font-bold">Splato</h1>
+        </div>
+
+        <div className="mb-8">
+          <EngineStatus />
+        </div>
 
         <nav className="space-y-2">
           <Link

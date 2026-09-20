@@ -5,6 +5,10 @@
 /splato/node_modules/
 /splato/.next/
 /splato/out/
+/engine/node_modules/
+
+# Local screenshots / browser artifacts
+/output/
 
 # Local configuration and runtime data
 /.env*
@@ -18,3 +22,6 @@
 
 # Tooling output
 *.tsbuildinfo
+
+# Playwright CLI session artifacts
+/.playwright-cli/
