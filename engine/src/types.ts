@@ -66,18 +66,22 @@ export type EngineReply =
 export interface EngineJob {
   jobId: string;
   projectId: string;
-  pipeline: EngineMessage extends never ? never : string;
+  pipeline: string;
   payload: Record<string, unknown>;
 }
 
 export interface EngineContext {
   projectDirectory: string;
+  /** Adapters register produced files here (path relative to the data directory, forward slashes). */
+  artifacts: Record<string, string>;
+  /** True once a cancel has been requested; long-running adapters should stop promptly. */
+  readonly cancelRequested: boolean;
   log(message: string): void;
   update(phase: string, progress: number, patch?: { completed?: number; total?: number; current?: string }): void;
 }
 
 export interface ReconstructionEngine {
-  id: "frame-thinning" | "glomap" | "colmap" | "dense" | "splat";
+  id: string;
   label: string;
   minimumHardware: "low" | "medium" | "high";
   run(job: EngineJob, context: EngineContext): Promise<void>;

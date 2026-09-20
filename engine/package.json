@@ -7,7 +7,8 @@
   "scripts": {
     "start": "node src/index.ts",
     "dev": "node --watch src/index.ts",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test": "node scripts/test-protocol.mjs"
   },
   "dependencies": {
     "ws": "^8.18.0"

@@ -6,7 +6,11 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "engine": "npm --prefix engine start",
+    "engine:dev": "npm --prefix engine run dev",
+    "engine:typecheck": "npm --prefix engine run typecheck",
+    "engine:test": "npm --prefix engine run test"
   },
   "dependencies": {
     "@prisma/adapter-pg": "^7.8.0",

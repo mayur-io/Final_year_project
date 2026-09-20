@@ -5,6 +5,8 @@ import path from "node:path";
 import { WebSocket, WebSocketServer } from "ws";
 
 import { generateHardwareProfile } from "./hardware.ts";
+import { JobManager, type EngineEvent } from "./jobs.ts";
+import { demoAdapter } from "./adapters/demo.ts";
 import { formatSeconds, planReconstruction } from "./planner.ts";
 import type { PlanningInput } from "./planner.ts";
 import { ENGINE_PROTOCOL_VERSION, type EngineMessage, type EngineReply, type HardwareProfile } from "./types.ts";
@@ -41,10 +43,13 @@ export class EngineServer {
   private readonly server: Server;
   private readonly wss: WebSocketServer;
   private readonly port: number;
+  private readonly jobManager: JobManager;
 
   constructor(options: EngineServerOptions) {
     this.hardware = generateHardwareProfile(options.dataDirectory);
     this.port = options.port;
+    this.jobManager = new JobManager(options.dataDirectory, (event) => this.broadcast(event));
+    this.jobManager.register(demoAdapter);
     this.server = createServer((request, response) => void this.handleHttp(request, response, options));
     this.wss = new WebSocketServer({ server: this.server });
     this.wss.on("connection", (socket) => this.handleSocket(socket));
@@ -146,7 +151,7 @@ export class EngineServer {
           version: ENGINE_PROTOCOL_VERSION,
           protocolVersion: ENGINE_PROTOCOL_VERSION,
           hardware,
-          engines: [],
+          engines: this.jobManager.engineIds(),
           ready: true,
         });
         break;
@@ -156,13 +161,26 @@ export class EngineServer {
         break;
       }
       case "submit": {
-        // M1 skeleton: no engine adapters registered yet.
-        this.send(socket, { type: "job.rejected", jobId: message.jobId, reason: "No reconstruction engines are registered on this machine yet. (M1 skeleton)" });
+        this.jobManager.submit({
+          jobId: message.jobId,
+          projectId: message.projectId,
+          pipeline: message.pipeline,
+          payload: message.payload,
+        });
         break;
       }
       case "cancel": {
-        this.send(socket, { type: "job.cancelled", jobId: message.jobId });
+        this.jobManager.cancel(message.jobId);
         break;
+      }
+    }
+  }
+
+  private broadcast(event: EngineEvent) {
+    const payload = JSON.stringify(event);
+    for (const socket of this.wss.clients) {
+      if (socket.readyState === WebSocket.OPEN) {
+        socket.send(payload);
       }
     }
   }
@@ -218,6 +236,13 @@ export class EngineServer {
   </table>
   <p class="muted" style="margin-top:8px">Total estimate: <strong>${formatSeconds(plan.estimatedTotalSeconds)}</strong> → artifacts: ${plan.expectedArtifacts.join(", ")}</p>
   <ul style="color:#a1a1aa;font-size:12px;line-height:1.7">${notes}</ul>
+  <h2 style="margin-top:32px">Demo job · full protocol round-trip</h2>
+  <p class="muted">Submit a job over WebSocket and watch accepted → progress → complete events stream back.</p>
+  <div class="row" style="margin-top:8px">
+    <button id="run-demo" style="background:#e4e4e7;color:#09090b;border:0;border-radius:6px;padding:8px 14px;font-family:inherit;font-size:13px;cursor:pointer">Run demo job</button>
+    <span id="job-state" class="muted">idle</span>
+  </div>
+  <pre id="job-log" style="margin-top:12px;min-height:120px">—</pre>
 </main>
 <script>
 const host = location.host;
@@ -233,8 +258,58 @@ ws.onmessage = (event) => {
   if (message.type === "hello") {
     document.getElementById("hardware").textContent = JSON.stringify({ hardware: message.hardware, engines: message.engines, ready: message.ready }, null, 2);
     dot.style.background = message.ready ? "#22c55e" : "#f59e0b";
+    return;
+  }
+  if (message.type.startsWith("job.")) {
+    renderJobEvent(message);
   }
 };
+const jobState = document.getElementById("job-state");
+const jobLog = document.getElementById("job-log");
+function jobAppend(html) {
+  jobLog.innerHTML += html + "\\n";
+  jobLog.scrollTop = jobLog.scrollHeight;
+}
+function renderJobEvent(message) {
+  switch (message.type) {
+    case "job.accepted":
+      jobState.textContent = "accepted";
+      jobAppend("→ accepted " + message.jobId + " started " + message.startedAt);
+      break;
+    case "job.progress":
+      jobState.textContent = message.phase + " · " + message.progress + "%";
+      jobAppend("· " + message.phase + " — " + message.progress + "%" + (message.current ? " (" + message.current + ")" : ""));
+      break;
+    case "job.complete":
+      jobState.textContent = "complete";
+      jobAppend("✓ complete — artifacts:");
+      for (const [key, url] of Object.entries(message.artifacts || {})) jobAppend('  ' + key + ' → <a href="' + url + '" target="_blank">' + url + '</a>');
+      document.getElementById("run-demo").disabled = false;
+      break;
+    case "job.failed":
+      jobState.textContent = "failed";
+      jobAppend("✗ failed — " + message.error);
+      document.getElementById("run-demo").disabled = false;
+      break;
+    case "job.rejected":
+      jobState.textContent = "rejected";
+      jobAppend("! rejected — " + message.reason);
+      document.getElementById("run-demo").disabled = false;
+      break;
+    case "job.cancelled":
+      jobState.textContent = "cancelled";
+      jobAppend("× cancelled " + message.jobId);
+      document.getElementById("run-demo").disabled = false;
+      break;
+  }
+}
+document.getElementById("run-demo").addEventListener("click", () => {
+  const jobId = "demo-" + Date.now();
+  jobLog.textContent = "submitting " + jobId + " …";
+  jobState.textContent = "submitting";
+  document.getElementById("run-demo").disabled = true;
+  ws.send(JSON.stringify({ type: "submit", jobId, projectId: "demo-project", pipeline: "demo", payload: {} }));
+});
 ws.onerror = () => { state.textContent = "connection failed — is the engine running?"; dot.style.background = "#ef4444"; state.style.color = "#ef4444"; };
 ws.onclose = () => { state.textContent = "connection closed"; dot.style.background = "#71717a"; };
 </script>
