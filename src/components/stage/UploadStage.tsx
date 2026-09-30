@@ -110,14 +110,46 @@ export default function UploadStage({ projectId, onStateChange }: UploadStagePro
 
   const canPlanViews = source?.workspace === "VIEWER_360" && !processingFrames;
   const plannerVisible = Boolean(source) && (processingConversion || convertedViews === 0 || plannerOpen);
-  const openPlanner = () => { setReconstructionOpen(false); setPlannerOpen(true); };
+
+  // These handlers are dependencies of each stage's panel memo, and the panel
+  // provider lives above this component. Passing fresh arrow functions inline
+  // rebuilt the panel object on every render, so publishing it re-rendered this
+  // component, which rebuilt it again, and the loop tripped React's
+  // update-depth limit. Stable identities keep the memo from recomputing.
+  const openPlanner = useCallback(() => {
+    setReconstructionOpen(false);
+    setPlannerOpen(true);
+  }, []);
+
+  const closePlanner = useCallback(() => setPlannerOpen(false), []);
+
+  const openReconstruction = useCallback(() => {
+    setPlannerOpen(false);
+    setReconstructionOpen(true);
+  }, []);
+
+  const handleFramesChanged = useCallback(() => {
+    void refreshProcessed();
+  }, [refreshProcessed]);
+
+  const handleConversionComplete = useCallback(() => {
+    setPlannerOpen(false);
+    void refreshProcessed();
+  }, [refreshProcessed]);
+
+  const handleVideoPrepared = useCallback((nextSummary: typeof summary) => {
+    setSummary(nextSummary);
+    void refreshProcessed();
+  }, [refreshProcessed]);
+
+  const planViewsButton = canPlanViews ? openPlanner : undefined;
 
   let content: ReactNode = <UploadScene projectId={projectId} media={media} loading={loading} onUploadComplete={refreshMedia} />;
   if (source && reconstructionOpen) content = <ReconstructionStage projectId={projectId} frameCount={galleryFrames.length} />;
-  else if (source && processingFrames) content = <FrameGallery projectId={projectId} frames={galleryFrames} processing summary={summary} onFramesChanged={() => void refreshProcessed()} />;
-  else if (source && plannerVisible) content = <Viewer360 projectId={projectId} media={[source]} onReturnToUploader={() => setPlannerOpen(false)} onConversionComplete={() => { setPlannerOpen(false); void refreshProcessed(); }} replanning={convertedViews > 0 && !processingConversion} onCancelReplan={() => setPlannerOpen(false)} />;
-  else if (source?.assetType === "IMAGE") content = <FrameGallery projectId={projectId} frames={galleryFrames} processing={processingFrames} summary={summary} onReconstruct={() => { setPlannerOpen(false); setReconstructionOpen(true); }} onFramesChanged={() => void refreshProcessed()} />;
-  else if (source && galleryFrames.length > 0 && !processingFrames) content = <FrameGallery projectId={projectId} frames={galleryFrames} summary={summary} onReconstruct={() => { setPlannerOpen(false); setReconstructionOpen(true); }} onReplanViews={canPlanViews ? openPlanner : undefined} onFramesChanged={() => void refreshProcessed()} />;
-  else if (source) content = <VideoPreparationStage projectId={projectId} video={source} convertedViews={convertedViews} onComplete={(nextSummary) => { setSummary(nextSummary); void refreshProcessed(); }} />;
+  else if (source && processingFrames) content = <FrameGallery projectId={projectId} frames={galleryFrames} processing summary={summary} onFramesChanged={handleFramesChanged} />;
+  else if (source && plannerVisible) content = <Viewer360 projectId={projectId} media={[source]} onReturnToUploader={closePlanner} onConversionComplete={handleConversionComplete} replanning={convertedViews > 0 && !processingConversion} onCancelReplan={closePlanner} />;
+  else if (source?.assetType === "IMAGE") content = <FrameGallery projectId={projectId} frames={galleryFrames} processing={processingFrames} summary={summary} onReconstruct={openReconstruction} onFramesChanged={handleFramesChanged} />;
+  else if (source && galleryFrames.length > 0 && !processingFrames) content = <FrameGallery projectId={projectId} frames={galleryFrames} summary={summary} onReconstruct={openReconstruction} onReplanViews={planViewsButton} onFramesChanged={handleFramesChanged} />;
+  else if (source) content = <VideoPreparationStage projectId={projectId} video={source} convertedViews={convertedViews} onComplete={handleVideoPrepared} />;
   return <div className="stage-enter h-full min-h-0">{content}</div>;
 }

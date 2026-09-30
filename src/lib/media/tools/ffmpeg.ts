@@ -30,6 +30,23 @@ const FFPROBE_PATH =
   process.env.FFPROBE_PATH ?? path.join(path.dirname(FFMPEG_PATH), "ffprobe.exe");
 let nvencUnavailable = false;
 
+/**
+ * ffmpeg sizes its frame pools from the decoder and encoder thread counts, so
+ * thread count drives peak memory far more than resolution does. A 4K equirect
+ * H.264 source on 16 threads needs multiple gigabytes of frame buffers; on a
+ * machine with under a gigabyte free the process died with "Cannot allocate
+ * memory" (exit 69) before writing a single frame. Cap both sides, then step
+ * down further if a run still cannot allocate.
+ */
+const THREAD_LADDER = [4, 2, 1];
+
+function isAllocationFailure(error: unknown) {
+  if (!(error instanceof Error)) return false;
+  return /cannot allocate memory|out of memory|malloc of size \d+ failed|error code: -12|ENOMEM/i.test(
+    error.message,
+  );
+}
+
 function runFfmpeg(args: string[]) {
   return new Promise<void>((resolve, reject) => {
     const ffmpeg = spawn(FFMPEG_PATH, args);
@@ -83,13 +100,16 @@ export async function probeVideoDuration(input: string) {
   });
 }
 
-function buildExtractFramesArgs(options: ExtractFramesOptions): string[] {
+function buildExtractFramesArgs(options: ExtractFramesOptions, threads: number): string[] {
   const args: string[] = ["-y"];
 
   if (options.startTime !== undefined) {
     args.push("-ss", options.startTime.toString());
   }
 
+  // Cap the decoder: a 4K source otherwise allocates frame buffers for every
+  // core and can fail outright on a machine that is already short on memory.
+  args.push("-threads", String(threads), "-filter_threads", "1");
   args.push("-i", options.input);
 
   if (options.endTime !== undefined && options.startTime !== undefined) {
@@ -111,7 +131,19 @@ function buildExtractFramesArgs(options: ExtractFramesOptions): string[] {
 }
 
 export async function extractFrames(options: ExtractFramesOptions) {
-  return runFfmpeg(buildExtractFramesArgs(options));
+  let lastError: unknown;
+
+  for (const threads of THREAD_LADDER) {
+    try {
+      await runFfmpeg(buildExtractFramesArgs(options, threads));
+      return;
+    } catch (error) {
+      lastError = error;
+      if (!isAllocationFailure(error)) throw error;
+    }
+  }
+
+  throw lastError;
 }
 
 /**
@@ -159,54 +191,68 @@ export async function convert360View(options: Convert360ViewOptions) {
 
   await fs.rm(temporaryOutput, { force: true });
 
-  const commonArgs = [
-      "-y",
-      "-i",
-      options.input,
-      "-vf",
-      filter,
-      "-an",
-    ];
+  let lastError: unknown;
 
-  try {
-    if (!nvencUnavailable) {
-      try {
-      await runFfmpeg([
-        ...commonArgs,
-        "-c:v",
-        "h264_nvenc",
-        "-preset",
-        "p4",
-        "-cq",
-        "22",
-        "-movflags",
-        "+faststart",
-        temporaryOutput,
-      ]);
-      } catch {
-        nvencUnavailable = true;
+  for (const threads of THREAD_LADDER) {
+    // Decoder limit goes before -i, encoder limit after the output options.
+    const decodeArgs = ["-threads", String(threads), "-filter_threads", "1"];
+    const encodeArgs = ["-threads", String(threads)];
+    const commonArgs = ["-y", "-i", options.input, "-vf", filter, "-an"];
+    let encoder: "nvenc" | "x264" = nvencUnavailable ? "x264" : "nvenc";
+
+    try {
+      if (encoder === "nvenc") {
+        try {
+          await runFfmpeg([
+            ...decodeArgs,
+            ...commonArgs,
+            ...encodeArgs,
+            "-c:v",
+            "h264_nvenc",
+            "-preset",
+            "p4",
+            "-cq",
+            "22",
+            "-movflags",
+            "+faststart",
+            temporaryOutput,
+          ]);
+        } catch (error) {
+          // An allocation failure is a memory problem, not a missing encoder.
+          // Retrying on the next rung of the ladder handles it; flipping the
+          // global nvenc flag here would disable the GPU path for the whole run.
+          if (isAllocationFailure(error)) throw error;
+          nvencUnavailable = true;
+          encoder = "x264";
+        }
       }
-    }
 
-    if (nvencUnavailable) {
+      if (encoder === "x264") {
+        await fs.rm(temporaryOutput, { force: true });
+        await runFfmpeg([
+          ...decodeArgs,
+          ...commonArgs,
+          ...encodeArgs,
+          "-c:v",
+          "libx264",
+          "-preset",
+          "veryfast",
+          "-crf",
+          "20",
+          "-movflags",
+          "+faststart",
+          temporaryOutput,
+        ]);
+      }
+
+      await fs.rename(temporaryOutput, options.output);
+      return;
+    } catch (error) {
+      lastError = error;
       await fs.rm(temporaryOutput, { force: true });
-      await runFfmpeg([
-        ...commonArgs,
-        "-c:v",
-        "libx264",
-        "-preset",
-        "veryfast",
-        "-crf",
-        "20",
-        "-movflags",
-        "+faststart",
-        temporaryOutput,
-      ]);
+      if (!isAllocationFailure(error)) throw error;
     }
-
-    await fs.rename(temporaryOutput, options.output);
-  } catch (error) {
-    await fs.rm(temporaryOutput, { force: true });
-    throw error;
   }
+
+  throw lastError;
 }
