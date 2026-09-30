@@ -33,6 +33,19 @@ export type ProcessJob = {
 const MINIMUM_PREPARED_FRAMES = 100;
 const MAX_CANDIDATE_FRAMES = 1800;
 const MAX_PREPARED_FRAMES = 1200;
+
+/**
+ * Optional time bound coming from the UI. The form submits empty bounds as
+ * null or "", and `Number(null)` is 0 — which is finite — so a naive
+ * `Number.isFinite(Number(value))` check silently turned "no end time" into
+ * "end at 0s" and truncated every stream to a single frame.
+ */
+function optionalSeconds(value: unknown): number | undefined {
+  if (value === null || value === undefined || value === "") return undefined;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : undefined;
+}
+
 const activeJobs = new Map<string, ProcessJob>();
 const cancelRequests = new Set<string>();
 const recommendedDirections: Direction[] = [
@@ -248,16 +261,17 @@ async function execute(projectId: string, job: ProcessJob) {
       );
     }
   } catch (error) {
+    const message = error instanceof Error ? error.message : "Processing failed.";
     await update(
       projectId,
       job,
       {
         state: "failed",
         phase: "Needs more coverage",
-        error: error instanceof Error ? error.message : "Processing failed.",
+        error: message,
         finishedAt: new Date().toISOString(),
       },
-      "Processing stopped before reconstruction because the prepared frame set is not reliable enough.",
+      "Processing stopped: " + message,
     );
   }
 }
@@ -420,8 +434,8 @@ async function extract(projectId: string, job: ProcessJob) {
       outputDirectory: candidatesDirectory,
       fps: effectiveFps,
       quality: Math.min(Math.max(Number(settings.quality) || 2, 2), 31),
-      startTime: Number.isFinite(Number(settings.startTime)) ? Number(settings.startTime) : undefined,
-      endTime: Number.isFinite(Number(settings.endTime)) ? Number(settings.endTime) : undefined,
+      startTime: optionalSeconds(settings.startTime),
+      endTime: optionalSeconds(settings.endTime),
       outputPrefix: prefix,
     });
     await writeCheckpoint(checkpointsDirectory, prefix);

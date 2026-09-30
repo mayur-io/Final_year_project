@@ -23,6 +23,7 @@
     "prisma": "^7.8.0",
     "react": "19.2.4",
     "react-dom": "19.2.4",
+    "sharp": "^0.34.5",
     "three": "^0.185.1",
     "uploadthing": "^7.7.4"
   },

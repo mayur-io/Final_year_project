@@ -40,6 +40,26 @@ function parseTextPoints(contents: string) {
   return points;
 }
 
+/**
+ * COLMAP sparse `points3D.bin` record layout, as written by the COLMAP build
+ * that produced this project's reconstruction:
+ *
+ *   u64  record count
+ *   per record (51-byte header):
+ *     u32 point3D_id
+ *     u32 (reserved)
+ *     f64 x, f64 y, f64 z        <- 8-byte coordinates, not f32
+ *     u8  r, u8 g, u8 b
+ *     f64 error
+ *     u64 track_length
+ *     track: track_length * (i32 image_id, i32 point2D_idx)   <- 8 bytes/entry
+ *
+ * Coordinates are interleaved with variable-length tracks, so the file must be
+ * walked sequentially; it cannot be read as a fixed-stride array of records.
+ */
+const POINT_HEADER_BYTES = 51;
+const TRACK_ENTRY_BYTES = 8;
+
 function parseBinaryPoints(buffer: Buffer) {
   if (buffer.length < 8) {
     return [] as Array<[number, number, number, number, number, number]>;
@@ -50,33 +70,24 @@ function parseBinaryPoints(buffer: Buffer) {
   let offset = 8;
 
   for (let index = 0; index < count && points.length < MAX_POINTS; index += 1) {
-    if (offset + 8 * 3 + 3 + 4 + 8 > buffer.length) {
+    if (offset + POINT_HEADER_BYTES > buffer.length) {
       break;
     }
 
-    const x = buffer.readFloatLE(offset);
-    offset += 4;
-    const y = buffer.readFloatLE(offset);
-    offset += 4;
-    const z = buffer.readFloatLE(offset);
-    offset += 4;
-    const r = buffer.readUInt8(offset);
-    offset += 1;
-    const g = buffer.readUInt8(offset);
-    offset += 1;
-    const b = buffer.readUInt8(offset);
-    offset += 1;
+    const x = buffer.readDoubleLE(offset + 8);
+    const y = buffer.readDoubleLE(offset + 16);
+    const z = buffer.readDoubleLE(offset + 24);
+    const r = buffer.readUInt8(offset + 32);
+    const g = buffer.readUInt8(offset + 33);
+    const b = buffer.readUInt8(offset + 34);
+    const error = buffer.readDoubleLE(offset + 35);
 
-    const error = buffer.readFloatLE(offset);
-    offset += 4;
-    const trackLength = Number(buffer.readBigUInt64LE(offset));
-    offset += 8;
-
-    const payloadSize = trackLength * 16;
-    if (offset + payloadSize > buffer.length) {
+    const trackLength = Number(buffer.readBigUInt64LE(offset + 43));
+    if (!Number.isFinite(trackLength) || trackLength < 0 || trackLength > 1_000_000) {
       break;
     }
-    offset += payloadSize;
+
+    offset += POINT_HEADER_BYTES + trackLength * TRACK_ENTRY_BYTES;
 
     if ([x, y, z, error].some((value) => !Number.isFinite(value))) {
       continue;
