@@ -27,6 +27,7 @@ export default function UploadStage({ projectId, onStateChange }: UploadStagePro
   const [convertedViews, setConvertedViews] = useState(0);
   const [summary, setSummary] = useState({ sampled: 0, rejected: 0 });
   const [reconstructionOpen, setReconstructionOpen] = useState(false);
+  const [plannerOpen, setPlannerOpen] = useState(false);
   const [processJob, setProcessJob] = useState<{ pipeline: string; state: string } | null>(null);
 
   const refreshProcessed = useCallback(async () => {
@@ -100,18 +101,23 @@ export default function UploadStage({ projectId, onStateChange }: UploadStagePro
     if (!source) onStateChange?.("Source capture");
     else if (reconstructionOpen) onStateChange?.("Reconstruction");
     else if (processingConversion) onStateChange?.("Creating projected views");
+    else if (plannerOpen) onStateChange?.("360° projection");
     else if (processingFrames) onStateChange?.(`Extracting frames · ${galleryFrames.length} visible`);
     else if (galleryFrames.length) onStateChange?.("Image gallery");
     else if (source.workspace === "VIEWER_360" && convertedViews === 0) onStateChange?.("360° projection");
     else onStateChange?.("Video preparation");
-  }, [convertedViews, galleryFrames.length, onStateChange, processingConversion, processingFrames, reconstructionOpen, source]);
+  }, [convertedViews, galleryFrames.length, onStateChange, plannerOpen, processingConversion, processingFrames, reconstructionOpen, source]);
+
+  const canPlanViews = source?.workspace === "VIEWER_360" && !processingFrames;
+  const plannerVisible = Boolean(source) && (processingConversion || convertedViews === 0 || plannerOpen);
+  const openPlanner = () => { setReconstructionOpen(false); setPlannerOpen(true); };
 
   let content: ReactNode = <UploadScene projectId={projectId} media={media} loading={loading} onUploadComplete={refreshMedia} />;
   if (source && reconstructionOpen) content = <ReconstructionStage projectId={projectId} frameCount={galleryFrames.length} />;
   else if (source && processingFrames) content = <FrameGallery projectId={projectId} frames={galleryFrames} processing summary={summary} onFramesChanged={() => void refreshProcessed()} />;
-  else if (source?.assetType === "IMAGE") content = <FrameGallery projectId={projectId} frames={galleryFrames} processing={processingFrames} summary={summary} onReconstruct={() => setReconstructionOpen(true)} onFramesChanged={() => void refreshProcessed()} />;
-  else if (source && galleryFrames.length > 0 && !processingFrames) content = <FrameGallery projectId={projectId} frames={galleryFrames} summary={summary} onReconstruct={() => setReconstructionOpen(true)} onFramesChanged={() => void refreshProcessed()} />;
-  else if (source?.workspace === "VIEWER_360" && (convertedViews === 0 || processingConversion)) content = <Viewer360 projectId={projectId} media={[source]} onReturnToUploader={() => undefined} onConversionComplete={() => void refreshProcessed()} />;
+  else if (source && plannerVisible) content = <Viewer360 projectId={projectId} media={[source]} onReturnToUploader={() => setPlannerOpen(false)} onConversionComplete={() => { setPlannerOpen(false); void refreshProcessed(); }} replanning={convertedViews > 0 && !processingConversion} onCancelReplan={() => setPlannerOpen(false)} />;
+  else if (source?.assetType === "IMAGE") content = <FrameGallery projectId={projectId} frames={galleryFrames} processing={processingFrames} summary={summary} onReconstruct={() => { setPlannerOpen(false); setReconstructionOpen(true); }} onFramesChanged={() => void refreshProcessed()} />;
+  else if (source && galleryFrames.length > 0 && !processingFrames) content = <FrameGallery projectId={projectId} frames={galleryFrames} summary={summary} onReconstruct={() => { setPlannerOpen(false); setReconstructionOpen(true); }} onReplanViews={canPlanViews ? openPlanner : undefined} onFramesChanged={() => void refreshProcessed()} />;
   else if (source) content = <VideoPreparationStage projectId={projectId} video={source} convertedViews={convertedViews} onComplete={(nextSummary) => { setSummary(nextSummary); void refreshProcessed(); }} />;
   return <div className="stage-enter h-full min-h-0">{content}</div>;
 }

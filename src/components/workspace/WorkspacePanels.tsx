@@ -33,8 +33,16 @@ export function useWorkspacePanels() {
 
 export function useStagePanels(panels: WorkspacePanels) {
   const { setPanels } = useWorkspacePanels();
+
+  // Publish panel content whenever the stage recomputes it.
   useEffect(() => {
     setPanels(panels);
-    return () => setPanels(emptyPanels);
   }, [panels, setPanels]);
+
+  // Clear only when the stage actually unmounts. Returning the reset from the
+  // publish effect blanked the panels and immediately restored them on every
+  // content change, which both flickered the sidebar and re-rendered the whole
+  // workspace twice per update — enough to trip React's update-depth limit
+  // while a stage was recomputing panels on a timer.
+  useEffect(() => () => setPanels(emptyPanels), [setPanels]);
 }

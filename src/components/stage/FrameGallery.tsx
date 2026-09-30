@@ -16,6 +16,7 @@ interface FrameGalleryProps {
   processing?: boolean;
   onPrepare?: () => Promise<void>;
   onReconstruct?: () => void;
+  onReplanViews?: () => void;
   onFramesChanged?: () => void;
   summary?: { sampled: number; rejected: number; };
 }
@@ -70,7 +71,7 @@ function GalleryImages({ frames, reviewing, selectedFrames, onSelect, onToggle }
 }
 
 export default function FrameGallery({
-  projectId, frames, processing = false, onPrepare, onReconstruct, onFramesChanged,
+  projectId, frames, processing = false, onPrepare, onReconstruct, onReplanViews, onFramesChanged,
 }: FrameGalleryProps) {
   const [selectedFrame, setSelectedFrame] = useState<GalleryFrame | null>(frames[0] ?? null);
   const [selectedFrames, setSelectedFrames] = useState<Set<string>>(new Set());
@@ -139,6 +140,7 @@ export default function FrameGallery({
           <button type="button" onClick={() => setSelectedFrames(new Set())} className="border border-zinc-700 px-2 py-1.5 text-xs text-zinc-300">Clear</button>
         </div><button type="button" disabled={!selectedCount || reviewing} onClick={() => void review("reject", [...selectedFrames])} className="flex w-full items-center justify-center gap-2 border border-rose-800 px-3 py-2 text-sm text-rose-200 disabled:opacity-40"><Trash2 className="h-3.5 w-3.5" />Reject {selectedCount || ""} frame{selectedCount === 1 ? "" : "s"}</button></> : null}
       </section> : null}
+      {onReplanViews && !processing ? <button type="button" onClick={onReplanViews} className="w-full border border-zinc-700 px-3 py-2.5 text-sm text-zinc-200">Re-plan 360° views</button> : null}
       {onReconstruct && !processing ? <button type="button" onClick={onReconstruct} className="w-full border border-zinc-700 px-3 py-2.5 text-sm text-zinc-200">Open reconstruction workspace</button> : null}
       {onPrepare ? <button type="button" onClick={() => void prepare()} disabled={preparing} className="flex w-full items-center justify-center gap-2 bg-zinc-100 px-3 py-2.5 text-sm font-medium text-black disabled:opacity-50">{preparing ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <Sparkles className="h-4 w-4" />}{preparing ? "Preparing images" : "Prepare image sequence"}</button> : null}
       {error ? <p className="border border-red-900 bg-red-950/30 p-2 text-xs text-red-200">{error}</p> : null}
