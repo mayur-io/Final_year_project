@@ -114,6 +114,25 @@ export async function extractFrames(options: ExtractFramesOptions) {
   return runFfmpeg(buildExtractFramesArgs(options));
 }
 
+/**
+ * ffmpeg's v360 filter only accepts yaw in [-180, 180] and pitch in [-90, 90].
+ * Planner presets step yaw past 180 (the horizon preset emits 0/45/.../315) and
+ * the filter is driven with a negated yaw, so a 225° view reached ffmpeg as
+ * -225° and aborted the whole conversion job. Normalize before we build the
+ * filter string.
+ */
+function wrapYaw(yaw: number): number {
+  if (!Number.isFinite(yaw)) return 0;
+  const wrapped = ((yaw + 180) % 360 + 360) % 360 - 180;
+  // -180 and 180 are the same view; keep the positive edge that presets use.
+  return wrapped === -180 ? 180 : wrapped;
+}
+
+function clampPitch(pitch: number): number {
+  if (!Number.isFinite(pitch)) return 0;
+  return Math.min(Math.max(pitch, -90), 90);
+}
+
 export async function convert360View(options: Convert360ViewOptions) {
   const outputWidth = options.outputWidth ?? 1600;
   const outputHeight = options.outputHeight ?? 900;
@@ -124,8 +143,8 @@ export async function convert360View(options: Convert360ViewOptions) {
   const filter = [
     "v360=input=equirect:output=flat",
     "interp=lanczos",
-    `yaw=${-options.yaw}`,
-    `pitch=${options.pitch}`,
+    `yaw=${-wrapYaw(options.yaw)}`,
+    `pitch=${clampPitch(options.pitch)}`,
     `h_fov=${horizontalFov}`,
     `v_fov=${verticalFov}`,
     `w=${outputWidth}`,
