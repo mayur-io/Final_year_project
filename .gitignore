@@ -2,10 +2,10 @@
 /node_modules/
 /.next/
 /out/
-/splato/node_modules/
-/splato/.next/
-/splato/out/
 /engine/node_modules/
+
+# Editor / agent scratch
+/.kilo/
 
 # Local screenshots / browser artifacts
 /output/
@@ -15,10 +15,6 @@
 /storage/
 /keys.txt
 /.vercel/
-/splato/.env*
-/splato/storage/
-/splato/keys.txt
-/splato/.vercel/
 
 # Tooling output
 *.tsbuildinfo
