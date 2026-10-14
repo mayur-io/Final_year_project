@@ -5,13 +5,15 @@ import { prisma } from "@/lib/prisma";
 export const dynamic = "force-dynamic";
 
 export default async function Home() {
+  // Most recently opened first; never-opened projects fall back to newest.
   const projects = await prisma.project.findMany({
     where: {
       isArchived: false,
     },
-    orderBy: {
-      createdAt: "desc",
-    },
+    orderBy: [
+      { lastAccessedAt: { sort: "desc", nulls: "last" } },
+      { createdAt: "desc" },
+    ],
   });
 
   return (

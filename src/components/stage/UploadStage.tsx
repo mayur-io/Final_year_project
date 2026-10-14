@@ -26,9 +26,24 @@ export default function UploadStage({ projectId, onStateChange }: UploadStagePro
   const [candidates, setCandidates] = useState<string[]>([]);
   const [convertedViews, setConvertedViews] = useState(0);
   const [summary, setSummary] = useState({ sampled: 0, rejected: 0 });
-  const [reconstructionOpen, setReconstructionOpen] = useState(false);
+  // Deep-linkable stage: `?stage=reconstruction` opens the reconstruction
+  // workspace directly (and survives reload/back navigation). Without this,
+  // every refresh bounced back to the image gallery even after a trained
+  // model existed, which read as "run reconstruction again".
+  const [reconstructionOpen, setReconstructionOpen] = useState(() => {
+    if (typeof window === "undefined") return false;
+    return new URLSearchParams(window.location.search).get("stage") === "reconstruction";
+  });
   const [plannerOpen, setPlannerOpen] = useState(false);
   const [processJob, setProcessJob] = useState<{ pipeline: string; state: string } | null>(null);
+
+  function syncStageToUrl(next: "gallery" | "reconstruction") {
+    if (typeof window === "undefined") return;
+    const url = new URL(window.location.href);
+    if (next === "reconstruction") url.searchParams.set("stage", "reconstruction");
+    else url.searchParams.delete("stage");
+    window.history.replaceState(null, "", url.pathname + url.search + url.hash);
+  }
 
   const refreshProcessed = useCallback(async () => {
     const response = await fetch(`/api/projects/${projectId}/processed`);
@@ -50,6 +65,27 @@ export default function UploadStage({ projectId, onStateChange }: UploadStagePro
 
     return () => window.clearTimeout(timer);
   }, [refreshProcessed]);
+
+  // Keep the workspace in sync with browser back/forward: `?stage=` is the
+  // source of truth so "back" from reconstruction returns to the gallery
+  // instead of dropping state.
+  useEffect(() => {
+    function onPopState() {
+      const stage = new URLSearchParams(window.location.search).get("stage");
+      setReconstructionOpen(stage === "reconstruction");
+      if (stage === "reconstruction") setPlannerOpen(false);
+    }
+    function onCloseRequest() {
+      setReconstructionOpen(false);
+      syncStageToUrl("gallery");
+    }
+    window.addEventListener("popstate", onPopState);
+    window.addEventListener("splato:close-reconstruction", onCloseRequest);
+    return () => {
+      window.removeEventListener("popstate", onPopState);
+      window.removeEventListener("splato:close-reconstruction", onCloseRequest);
+    };
+  }, []);
 
   useEffect(() => {
     async function refreshJob() {
@@ -109,7 +145,12 @@ export default function UploadStage({ projectId, onStateChange }: UploadStagePro
   }, [convertedViews, galleryFrames.length, onStateChange, plannerOpen, processingConversion, processingFrames, reconstructionOpen, source]);
 
   const canPlanViews = source?.workspace === "VIEWER_360" && !processingFrames;
-  const plannerVisible = Boolean(source) && (processingConversion || convertedViews === 0 || plannerOpen);
+  // The 360 projection planner must only ever open for a VIEWER_360 source.
+  // Previously `convertedViews === 0` was unconditionally true for normal
+  // videos and image sequences too, so every upload bounced through the
+  // "Automatic spherical coverage" viewer before reaching its real route.
+  const plannerVisible =
+    source?.workspace === "VIEWER_360" && (processingConversion || convertedViews === 0 || plannerOpen);
 
   // These handlers are dependencies of each stage's panel memo, and the panel
   // provider lives above this component. Passing fresh arrow functions inline
@@ -126,6 +167,12 @@ export default function UploadStage({ projectId, onStateChange }: UploadStagePro
   const openReconstruction = useCallback(() => {
     setPlannerOpen(false);
     setReconstructionOpen(true);
+    syncStageToUrl("reconstruction");
+  }, []);
+
+  const closeReconstruction = useCallback(() => {
+    setReconstructionOpen(false);
+    syncStageToUrl("gallery");
   }, []);
 
   const handleFramesChanged = useCallback(() => {

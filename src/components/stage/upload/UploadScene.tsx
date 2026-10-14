@@ -111,7 +111,7 @@ export default function UploadScene({
 
     if (
       (intent === "360-video" && (!validVideos || files.length !== 1)) ||
-      (intent === "normal-video" && !validVideos) ||
+      (intent === "normal-video" && (!validVideos || files.length !== 1)) ||
       (intent === "image-sequence" && !validImages)
     ) {
       setError(
@@ -119,7 +119,7 @@ export default function UploadScene({
           ? "Choose valid image files or a folder containing supported images."
           : intent === "360-video"
             ? "Choose one 360° video."
-            : "Choose supported video clips.",
+            : "Choose one regular video.",
       );
       return;
     }
@@ -180,21 +180,22 @@ export default function UploadScene({
               Source capture
             </p>
             <p className="mt-2 text-sm leading-6 text-zinc-400">
-              Choose one route. The workspace changes into the matching video or
-              image stage after import.
+              Pick the kind of capture you actually have. The app validates that
+              choice instead of silently changing it: a 360° file must be
+              stitched 2:1 equirectangular footage.
             </p>
           </section>
           <section className="border-y border-zinc-800 py-4">
             <p className="text-xs font-medium text-zinc-300">Accepted inputs</p>
             <ul className="mt-3 space-y-2 text-xs leading-5 text-zinc-500">
-              <li>• One 360° equirectangular video</li>
-              <li>• One regular capture video</li>
+              <li>• One stitched 2:1 equirectangular 360° video</li>
+              <li>• One regular perspective video</li>
               <li>• At least 100 matching capture images</li>
             </ul>
           </section>
           <p className="text-xs leading-5 text-zinc-600">
-            Drag-and-drop automatically detects regular video versus image
-            sequence. Use the 360° button for panoramic video.
+            Drag-and-drop accepts a regular video or an image sequence. Choose
+            the 360° button explicitly for panoramic video.
           </p>
         </div>
       ),
@@ -214,16 +215,17 @@ export default function UploadScene({
           </section>
           <section className="border-y border-zinc-800 py-4">
             <p className="text-xs font-medium uppercase tracking-[.16em] text-zinc-500">
-              Pipeline preview
+              What happens next
             </p>
             <p className="mt-2 text-sm leading-6 text-zinc-400">
-              360° video → normal views → frame extraction → image gallery.
+              Regular video → quality-filtered frames → image gallery.
             </p>
             <p className="mt-2 text-sm leading-6 text-zinc-400">
-              Regular video → frame extraction → image gallery.
+              Equirectangular 360° → perspective projections → extraction →
+              image gallery.
             </p>
             <p className="mt-2 text-sm leading-6 text-zinc-400">
-              Images → quality filtering → image gallery.
+              Images → validation and filtering → image gallery.
             </p>
           </section>
           {error ? (
@@ -252,7 +254,6 @@ export default function UploadScene({
         ref={normalVideoInput}
         className="hidden"
         type="file"
-        multiple
         accept={VIDEO_INPUT_ACCEPT}
         onChange={(event) => selectFiles(event, "normal-video")}
       />
@@ -291,8 +292,8 @@ export default function UploadScene({
           Start with one capture session.
         </h1>
         <p className="mt-3 max-w-xl text-sm leading-6 text-zinc-400">
-          Choose a 360° video, regular video clips, or an image sequence. All
-          routes become one prepared image set.
+          Choose a 360° video, one regular video, or an image sequence. Each
+          route becomes one validated set of reconstruction-ready images.
         </p>
 
         <div className="mt-8 grid gap-px border border-zinc-800 bg-zinc-800 md:grid-cols-3">
@@ -305,7 +306,7 @@ export default function UploadScene({
             <Video className="h-5 w-5 text-zinc-300" />
             <span className="mt-6 block text-sm font-medium">Normal video</span>
             <span className="mt-1 block text-xs leading-5 text-zinc-500">
-              One direct capture video.
+              One regular perspective capture.
             </span>
           </button>
           <button
@@ -317,7 +318,7 @@ export default function UploadScene({
             <Orbit className="h-5 w-5 text-zinc-300" />
             <span className="mt-6 block text-sm font-medium">360° video</span>
             <span className="mt-1 block text-xs leading-5 text-zinc-500">
-              One equirectangular capture.
+              One stitched 2:1 equirectangular capture.
             </span>
           </button>
           <div className="bg-[#111114] p-5 text-left">
@@ -333,7 +334,7 @@ export default function UploadScene({
         </div>
 
         <p className="mt-5 text-xs text-zinc-500">
-          Or drop regular video clips or an image sequence here.
+          Or drop one regular video or an image sequence here.
         </p>
         {uploading ? (
           <p className="mt-5 flex items-center gap-2 text-sm text-zinc-300">

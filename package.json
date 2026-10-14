@@ -4,6 +4,7 @@
   "private": true,
   "scripts": {
     "dev": "next dev",
+    "prebuild": "node -e \"require('fs').rmSync('.next/dev',{recursive:true,force:true})\"",
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
@@ -13,6 +14,7 @@
     "engine:test": "npm --prefix engine run test"
   },
   "dependencies": {
+    "@mkkellogg/gaussian-splats-3d": "^0.4.7",
     "@prisma/adapter-pg": "^7.8.0",
     "@prisma/client": "^7.8.0",
     "@react-three/drei": "^10.7.7",
@@ -35,6 +37,7 @@
     "eslint": "^9",
     "eslint-config-next": "16.2.10",
     "tailwindcss": "^4",
+    "tsx": "^4.23.15",
     "typescript": "^5"
   }
 }

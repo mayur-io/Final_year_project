@@ -3,29 +3,32 @@
 import {
   AlertTriangle,
   Box,
-  CheckCircle2,
-  Clock3,
   Cpu,
   Download,
-  Gauge,
   Play,
-  ScanLine,
-  Sparkles,
-  Terminal,
+  Square,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 
 import { useStagePanels } from "@/components/workspace/WorkspacePanels";
 import PointCloudViewer from "@/components/stage/PointCloudViewer";
+import SplatViewer from "@/components/stage/SplatViewer";
 
 interface ReconstructionStageProps {
   projectId: string;
   frameCount: number;
 }
 type ReconstructionMode = "object" | "environment";
-type Quality = "draft" | "balanced" | "high";
 type ColmapJob = {
-  phase: "queued" | "features" | "matching" | "mapping" | "complete" | "failed";
+  phase: "queued" | "features" | "matching" | "mapping" | "dense" | "complete" | "failed" | "cancelled" | "cancelling";
+  startedAt: string;
+  finishedAt?: string;
+  logs: string[];
+  error?: string;
+};
+type SplatJobState = {
+  phase: "queued" | "training" | "bootstrapping" | "complete" | "failed" | "cancelled" | "cancelling";
+  trained: boolean;
   startedAt: string;
   finishedAt?: string;
   logs: string[];
@@ -35,27 +38,73 @@ type ReconstructionStatus = {
   engines: {
     colmapAvailable: boolean;
     colmapManaged: boolean;
+    glomapAvailable: boolean;
+    glomapManaged: boolean;
+    glomapCompatible: boolean;
     gaussianRuntimeAvailable: boolean;
+    gaussianRuntimeMode: "train" | "bootstrap" | null;
   };
-  artifacts: { hasPointCloud: boolean; hasSplat: boolean };
+  environment?: {
+    ffmpeg: boolean;
+    ffprobe: boolean;
+    colmap: boolean;
+    python: boolean;
+    numpy: boolean;
+    gpu: string | null;
+  };
+  artifacts: {
+    hasPointCloud: boolean;
+    hasDense: boolean;
+    hasSplat: boolean;
+    splatTrained: boolean;
+  };
+  preparation: {
+    verdict: "PASS" | "WARN" | "REJECT";
+    reasons: string[];
+    warnings: string[];
+  } | null;
+  report: {
+    verdict: "PASS" | "WARN" | "FAIL";
+    engine: string;
+    engineVersion?: string;
+    intent: string;
+    registeredImages: number;
+    unregisteredImages: number;
+    registrationRatio: number | null;
+    meanReprojectionErrorPx: number | null;
+    sparsePointCount: number;
+    densePointCount: number | null;
+    warnings: string[];
+    qualityNotes: string[];
+    failure?: { stage: string; message: string; recoverable: boolean };
+  } | null;
   job: ColmapJob | null;
+  splatJob: SplatJobState | null;
 };
 
-const progressForPhase: Record<ColmapJob["phase"], number> = {
-  queued: 2,
-  features: 28,
-  matching: 58,
-  mapping: 84,
-  complete: 100,
-  failed: 0,
-};
 const phaseTitle: Record<ColmapJob["phase"], string> = {
   queued: "Queued",
   features: "Feature extraction",
   matching: "Feature matching",
   mapping: "Camera reconstruction",
+  dense: "Dense reconstruction",
   complete: "Sparse cloud ready",
   failed: "Needs attention",
+  cancelled: "Stopped safely",
+  cancelling: "Stopping…",
+};
+
+/** Single progress readout, shown in the controls column under the actions. */
+const phaseProgress: Record<ColmapJob["phase"], number> = {
+  queued: 2,
+  features: 22,
+  matching: 44,
+  mapping: 66,
+  dense: 86,
+  complete: 100,
+  failed: 0,
+  cancelled: 0,
+  cancelling: 50,
 };
 
 function elapsed(startedAt?: string, now = Date.now()) {
@@ -72,10 +121,30 @@ export default function ReconstructionStage({
   frameCount,
 }: ReconstructionStageProps) {
   const [mode, setMode] = useState<ReconstructionMode>("environment");
-  const [quality, setQuality] = useState<Quality>("balanced");
+  // Two build targets only: a fast sparse cloud, or sparse + dense in one run.
+  // Dense can also be added later without wiping anything (build-dense).
+  const [buildTarget, setBuildTarget] = useState<"sparse" | "dense">("sparse");
+  // Solver choice. GLOMAP is preselected: the startup probe enables this
+  // button only when the installed build can actually read our databases.
+  const [mapper, setMapper] = useState<"glomap" | "colmap">("glomap");
   const [status, setStatus] = useState<ReconstructionStatus | null>(null);
   const [starting, setStarting] = useState(false);
   const [installing, setInstalling] = useState(false);
+  const [splatStarting, setSplatStarting] = useState(false);
+  const [splatInstalling, setSplatInstalling] = useState(false);
+  const [stoppingColmap, setStoppingColmap] = useState(false);
+  const [stoppingSplat, setStoppingSplat] = useState(false);
+  const [buildingDense, setBuildingDense] = useState(false);
+  // Center viewer toggle: point cloud vs trained Gaussian model.
+  const [viewTab, setViewTab] = useState<"cloud" | "splat">("cloud");
+  const [viewAutoPicked, setViewAutoPicked] = useState(false);
+  // Open on the trained model when one exists; the user can toggle back.
+  useEffect(() => {
+    if (viewAutoPicked || !status) return;
+    setViewTab(status.artifacts.hasSplat ? "splat" : "cloud");
+    setViewAutoPicked(true);
+  }, [status, viewAutoPicked]);
+  const [cloudSource, setCloudSource] = useState<"sparse" | "dense">("sparse");
   const [error, setError] = useState<string | null>(null);
   const [now, setNow] = useState(Date.now());
   const refreshStatus = useCallback(async () => {
@@ -91,12 +160,15 @@ export default function ReconstructionStage({
     return () => window.clearInterval(timer);
   }, [refreshStatus]);
 
-  async function request(action: "reconstruct" | "install-engine") {
+  async function request(action: "reconstruct" | "build-dense" | "install-engine" | "install-splat" | "build-splat" | "cancel-reconstruction" | "cancel-splat") {
     const response = await fetch(`/api/projects/${projectId}/reconstruction`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
+      // "dense" target runs the full pipeline at balanced resolution.
       body: JSON.stringify(
-        action === "reconstruct" ? { action, mode, quality } : { action },
+        action === "reconstruct"
+          ? { action, mode, quality: buildTarget === "dense" ? "balanced" : "draft", mapper }
+          : { action },
       ),
     });
     const result = (await response.json()) as { error?: string };
@@ -137,16 +209,91 @@ export default function ReconstructionStage({
   }
 
   const colmapReady = status?.engines.colmapAvailable ?? false;
+  const splatReady = status?.engines.gaussianRuntimeAvailable ?? false;
+  const splatMode = status?.engines.gaussianRuntimeMode ?? null;
+  const splatTrained = status?.artifacts.splatTrained ?? false;
+  const environment = status?.environment;
+  const missingTools = environment
+    ? [
+        !environment.ffmpeg && "ffmpeg",
+        !environment.ffprobe && "ffprobe",
+        !environment.colmap && "COLMAP",
+        !environment.python && "Python",
+        !environment.numpy && "numpy",
+      ].filter((item): item is string => typeof item === "string")
+    : [];
+  const environmentOk = Boolean(environment) && missingTools.length === 0;
   const job = status?.job;
-  const jobActive = job ? !["complete", "failed"].includes(job.phase) : false;
-  const progress = job ? progressForPhase[job.phase] : 0;
-  const estimatedMinutes = Math.max(
-    2,
-    Math.ceil(
-      frameCount /
-        (quality === "draft" ? 90 : quality === "balanced" ? 45 : 25),
-    ),
-  );
+  const splatJob = status?.splatJob;
+  const preparation = status?.preparation ?? null;
+  const report = status?.report ?? null;
+  const preparationBlocked = preparation?.verdict === "REJECT";
+  const jobActive = job ? !["complete", "failed", "cancelled"].includes(job.phase) : false;
+  const splatActive = splatJob ? !["complete", "failed", "cancelled"].includes(splatJob.phase) : false;
+  const jobCancellable = job ? ["queued", "features", "matching", "mapping", "dense"].includes(job.phase) : false;
+  const splatCancellable = splatJob ? ["queued", "training", "bootstrapping"].includes(splatJob.phase) : false;
+  const progress = job ? phaseProgress[job.phase] : 0;
+
+  async function buildSplat() {
+    setSplatStarting(true);
+    setError(null);
+    try {
+      await request("build-splat");
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "Splat build could not start.");
+    } finally {
+      setSplatStarting(false);
+      await refreshStatus();
+    }
+  }
+  async function setupSplat() {
+    setSplatInstalling(true);
+    setError(null);
+    try {
+      await request("install-splat");
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "Splat setup failed.");
+    } finally {
+      setSplatInstalling(false);
+      await refreshStatus();
+    }
+  }
+  async function stopColmap() {
+    setStoppingColmap(true);
+    setError(null);
+    try {
+      await request("cancel-reconstruction");
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "Could not stop reconstruction.");
+    } finally {
+      setStoppingColmap(false);
+      await refreshStatus();
+    }
+  }
+  async function stopSplat() {
+    setStoppingSplat(true);
+    setError(null);
+    try {
+      await request("cancel-splat");
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "Could not stop Gaussian training.");
+    } finally {
+      setStoppingSplat(false);
+      await refreshStatus();
+    }
+  }
+  async function buildDense() {
+    setBuildingDense(true);
+    setError(null);
+    try {
+      await request("build-dense");
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "Dense follow-up could not start.");
+    } finally {
+      setBuildingDense(false);
+      await refreshStatus();
+    }
+  }
   const panels = useMemo(
     () => ({
       left: (
@@ -163,7 +310,7 @@ export default function ReconstructionStage({
                     type="button"
                     disabled={jobActive}
                     onClick={() => setMode(item)}
-                    className={`border px-2 py-2 text-xs capitalize disabled:opacity-40 ${mode === item ? "border-zinc-300 bg-zinc-200 text-black" : "border-zinc-700 text-zinc-400"}`}
+                    className={`border px-2 py-2 text-xs capitalize disabled:opacity-50 ${mode === item ? "border-zinc-300 bg-zinc-200 text-black" : "border-zinc-700 text-zinc-400"}`}
                   >
                     {item}
                   </button>
@@ -171,26 +318,67 @@ export default function ReconstructionStage({
               )}
             </div>
             <p className="mt-2 text-xs leading-5 text-zinc-500">
-              Environment first tries global mapping, then safely falls back to
-              incremental mapping when calibration is unreliable.
+              Incremental mapping with a pose-quality gate: under 45% registered images fails fast instead of building on broken poses.
             </p>
           </section>
           <section>
             <p className="text-xs font-medium uppercase tracking-[.16em] text-zinc-500">
-              Quality budget
+              Point cloud
             </p>
             <div className="mt-3 grid gap-1">
-              {(["draft", "balanced", "high"] as Quality[]).map((item) => (
+              {(["sparse", "dense"] as const).map((item) => (
                 <button
                   key={item}
                   type="button"
                   disabled={jobActive}
-                  onClick={() => setQuality(item)}
-                  className={`border px-2 py-2 text-left text-xs capitalize disabled:opacity-40 ${quality === item ? "border-zinc-300 bg-zinc-200 text-black" : "border-zinc-700 text-zinc-400"}`}
+                  onClick={() => setBuildTarget(item)}
+                  className={`border px-2 py-2 text-left text-xs capitalize disabled:opacity-50 ${buildTarget === item ? "border-zinc-300 bg-zinc-200 text-black" : "border-zinc-700 text-zinc-400"}`}
                 >
-                  {item}
+                  <span className="block capitalize">{item === "sparse" ? "Sparse cloud" : "Dense cloud"}</span>
+                  <span className="mt-0.5 block text-[11px] opacity-70">
+                    {item === "sparse" ? "Fastest · enough for training" : "Sparse + dense · slowest"}
+                  </span>
                 </button>
               ))}
+            </div>
+            <p className="mt-2 text-xs leading-5 text-zinc-500">
+              Dense can also be added afterwards without wiping the sparse result.
+            </p>
+          </section>
+          <section>
+            <p className="text-xs font-medium uppercase tracking-[.16em] text-zinc-500">
+              Camera solver
+            </p>
+            <div className="mt-3 grid gap-1">
+              {(["glomap", "colmap"] as const).map((item) => {
+                const usable = item === "colmap" || Boolean(status?.engines.glomapCompatible);
+                return (
+                  <button
+                    key={item}
+                    type="button"
+                    disabled={jobActive || !usable}
+                    onClick={() => setMapper(item)}
+                    title={
+                      usable
+                        ? undefined
+                        : "GLOMAP needs a COLMAP build whose databases it can read — install a matching pair to enable it"
+                    }
+                    className={`border px-2 py-2 text-left text-xs capitalize disabled:opacity-50 ${mapper === item ? "border-zinc-300 bg-zinc-200 text-black" : "border-zinc-700 text-zinc-400"}`}
+                  >
+                    <span className="block capitalize">
+                      {item === "glomap" ? "GLOMAP global" : "COLMAP incremental"}
+                      {item === "glomap" && usable ? " · recommended" : ""}
+                    </span>
+                    <span className="mt-0.5 block text-[11px] opacity-70">
+                      {item === "glomap"
+                        ? usable
+                          ? "Joint global solve · seconds, not minutes"
+                          : "Unavailable — no compatible build"
+                        : "Proven fallback · slower on long sequences"}
+                    </span>
+                  </button>
+                );
+              })}
             </div>
           </section>
           {!colmapReady ? (
@@ -211,7 +399,7 @@ export default function ReconstructionStage({
             <button
               type="button"
               onClick={() => void start()}
-              disabled={starting || jobActive}
+              disabled={starting || jobActive || preparationBlocked}
               className="flex w-full items-center justify-center gap-2 bg-zinc-100 px-3 py-2.5 text-sm font-medium text-black disabled:opacity-50"
             >
               {starting || jobActive ? (
@@ -219,13 +407,79 @@ export default function ReconstructionStage({
               ) : (
                 <Play className="h-4 w-4" />
               )}
-              {jobActive
-                ? "Reconstruction running"
-                : job?.phase === "failed"
-                  ? "Retry sparse point cloud"
-                  : "Build sparse point cloud"}
+              {preparationBlocked
+                ? "Blocked by preparation"
+                : jobActive
+                  ? "Reconstruction running"
+                  : job?.phase === "failed"
+                    ? `Retry ${buildTarget} cloud`
+                    : job?.phase === "cancelled"
+                      ? "Restart after safe stop"
+                      : buildTarget === "dense"
+                        ? "Build sparse + dense clouds"
+                        : "Build sparse cloud"}
             </button>
           )}
+          {jobCancellable ? (
+            <button
+              type="button"
+              onClick={() => void stopColmap()}
+              disabled={stoppingColmap}
+              className="flex w-full items-center justify-center gap-2 border border-amber-700 px-3 py-2 text-xs text-amber-200 disabled:opacity-50"
+            >
+              <Square className="h-3.5 w-3.5" />
+              {stoppingColmap ? "Stopping…" : "Stop safely (keeps finished stages)"}
+            </button>
+          ) : null}
+          {colmapReady && status?.artifacts.hasPointCloud && !status?.artifacts.hasDense && !jobActive ? (
+            <button
+              type="button"
+              onClick={() => void buildDense()}
+              disabled={buildingDense || preparationBlocked}
+              title="Adds the dense cloud from the existing sparse result — nothing is wiped"
+              className="flex w-full items-center justify-center gap-2 border border-zinc-600 px-3 py-2 text-xs text-zinc-200 disabled:opacity-50"
+            >
+              <Box className="h-3.5 w-3.5" />
+              {buildingDense ? "Building dense…" : "Add dense cloud (keeps sparse)"}
+            </button>
+          ) : null}
+          {status?.artifacts.hasSplat ? (
+            <p className="text-xs leading-5 text-zinc-500">
+              Re-running reconstruction clears the clouds and the trained model file — retrain afterwards.
+            </p>
+          ) : null}
+          {(job || splatJob) && (
+            <section className="border-t border-zinc-800 pt-4">
+              <p className="text-xs font-medium uppercase tracking-[.16em] text-zinc-500">
+                Progress
+              </p>
+              {job ? (
+                <div className="mt-3">
+                  <div className="flex justify-between gap-3 text-xs">
+                    <span className="truncate text-zinc-200">{phaseTitle[job.phase]}</span>
+                    <span className="font-mono text-zinc-400">{progress}%</span>
+                  </div>
+                  <div className="mt-1.5 h-1 overflow-hidden bg-zinc-800">
+                    <div
+                      className={`h-full transition-all duration-500 ${job.phase === "failed" ? "bg-rose-400" : job.phase === "complete" ? "bg-emerald-400" : "bg-sky-300"}`}
+                      style={{ width: `${Math.max(2, progress)}%` }}
+                    />
+                  </div>
+                </div>
+              ) : null}
+              {splatJob ? (
+                <p className="mt-2 text-xs text-zinc-400">
+                  Gaussian model: <span className="font-mono">{splatJob.phase}</span>
+                </p>
+              ) : null}
+            </section>
+          )}
+          {preparationBlocked ? (
+            <p className="border border-rose-900 bg-rose-950/30 p-2 text-xs text-rose-200">
+              Preparation was rejected, so reconstruction will not start.{" "}
+              {preparation?.reasons.join(" ")}
+            </p>
+          ) : null}
           {error ? (
             <p className="border border-amber-900 bg-amber-950/30 p-2 text-xs text-amber-200">
               {error}
@@ -245,8 +499,23 @@ export default function ReconstructionStage({
                 <dd>{frameCount}</dd>
               </div>
               <div className="flex justify-between">
-                <dt>Est. solve</dt>
-                <dd>~{estimatedMinutes} min</dd>
+                <dt>Elapsed</dt>
+                <dd>{job ? elapsed(job.startedAt, now) : "—"}</dd>
+              </div>
+              <div className="flex justify-between">
+                <dt>Local tools</dt>
+                <dd className={environmentOk ? "text-emerald-300" : "text-amber-300"}>
+                  {environment ? (environmentOk ? "Ready" : "Missing pieces") : "Checking…"}
+                </dd>
+              </div>
+              {environment && !environmentOk ? (
+                <div className="text-[11px] leading-4 text-amber-200/90">
+                  Missing: {missingTools.join(", ")}. Fix this before starting — otherwise the job fails minutes in.
+                </div>
+              ) : null}
+              <div className="flex justify-between">
+                <dt>GPU</dt>
+                <dd>{environment?.gpu ?? "none detected"}</dd>
               </div>
               <div className="flex justify-between">
                 <dt>COLMAP</dt>
@@ -263,24 +532,34 @@ export default function ReconstructionStage({
                 </dd>
               </div>
               <div className="flex justify-between">
-                <dt>Elapsed</dt>
-                <dd>{elapsed(job?.startedAt, now)}</dd>
+                <dt>GLOMAP</dt>
+                <dd
+                  className={
+                    status?.engines.glomapAvailable && status?.engines.glomapCompatible ? "text-emerald-300" : "text-zinc-500"
+                  }
+                >
+                  {!status?.engines.glomapAvailable
+                    ? "Not installed"
+                    : status.engines.glomapCompatible
+                      ? status.engines.glomapManaged
+                        ? "Managed"
+                        : "Ready"
+                      : "Incompatible"}
+                </dd>
               </div>
             </dl>
           </section>
-          {job ? (
+          {job || splatJob ? (
             <section className="border-y border-zinc-800 py-4">
               <p className="text-xs font-medium uppercase tracking-[.16em] text-zinc-500">
-                Live COLMAP
+                Live engine stream
               </p>
-              <p
-                className={`mt-2 text-sm ${job.phase === "failed" ? "text-rose-300" : job.phase === "complete" ? "text-emerald-300" : "text-sky-300"}`}
-              >
-                {phaseTitle[job.phase]}
-              </p>
-              <p className="mt-2 max-h-48 overflow-auto whitespace-pre-wrap border border-zinc-800 bg-black/30 p-2 font-mono text-[10px] leading-4 text-zinc-400">
-                {job.logs.slice(-14).join("\n")}
-              </p>
+              <pre className="mt-2 max-h-64 overflow-auto whitespace-pre-wrap border border-zinc-800 bg-black/30 p-2 font-mono text-[10px] leading-4 text-zinc-400">
+                {[
+                  ...(job ? [`── reconstruction (${phaseTitle[job.phase]}) ──`, ...job.logs.slice(-14)] : []),
+                  ...(splatJob ? [`── gaussian model (${splatJob.phase}) ──`, ...splatJob.logs.slice(-10)] : []),
+                ].join("\n")}
+              </pre>
             </section>
           ) : null}
           <section>
@@ -293,166 +572,199 @@ export default function ReconstructionStage({
                 : "No point cloud yet."}
             </p>
             <p className="mt-1 text-sm text-zinc-400">
-              {status?.artifacts.hasSplat
-                ? "Gaussian Splat available."
-                : "No Gaussian Splat yet."}
+              {status?.artifacts.hasDense
+                ? "Dense point cloud available."
+                : "No dense cloud yet (pick the dense target, or add it afterwards)."}
             </p>
+            <p className="mt-1 text-sm text-zinc-400">
+              {status?.artifacts.hasSplat
+                ? status?.artifacts.splatTrained
+                  ? "Trained 3D Gaussian model available (real gsplat optimizer)."
+                  : "Gaussian initialization preview available (not a trained 3DGS model)."
+                : "No Gaussian model yet."}
+            </p>
+          </section>
+          {report ? (
+            <section className="border-t border-zinc-800 pt-4">
+              <p className="text-xs font-medium uppercase tracking-[.16em] text-zinc-500">
+                Latest reconstruction result
+              </p>
+              <p className={`mt-2 text-sm font-medium ${report.verdict === "FAIL" ? "text-rose-300" : report.verdict === "WARN" ? "text-amber-300" : "text-emerald-300"}`}>
+                {report.verdict} · {report.engine}
+                {report.engineVersion ? ` ${report.engineVersion}` : ""}
+              </p>
+              <dl className="mt-3 space-y-2 text-xs text-zinc-400">
+                <div className="flex justify-between">
+                  <dt>Registered images</dt>
+                  <dd className="font-mono">
+                    {report.registeredImages}/
+                    {report.registeredImages + report.unregisteredImages}
+                    {report.registrationRatio != null
+                      ? ` (${(report.registrationRatio * 100).toFixed(0)}%)`
+                      : ""}
+                  </dd>
+                </div>
+                <div className="flex justify-between">
+                  <dt>Mean reprojection error</dt>
+                  <dd className="font-mono">
+                    {report.meanReprojectionErrorPx != null
+                      ? `${report.meanReprojectionErrorPx.toFixed(2)} px`
+                      : "unavailable"}
+                  </dd>
+                </div>
+                <div className="flex justify-between">
+                  <dt>Sparse points</dt>
+                  <dd className="font-mono">{report.sparsePointCount}</dd>
+                </div>
+                <div className="flex justify-between">
+                  <dt>Dense vertices</dt>
+                  <dd className="font-mono">{report.densePointCount ?? "not produced"}</dd>
+                </div>
+              </dl>
+              {report.failure ? (
+                <p className="mt-3 text-xs leading-5 text-rose-200">{report.failure.message}</p>
+              ) : null}
+              {report.warnings.map((warning) => (
+                <p key={warning} className="mt-2 text-xs leading-5 text-amber-200">
+                  {warning}
+                </p>
+              ))}
+            </section>
+          ) : null}
+          <section className="border-t border-zinc-800 pt-4">
+            <p className="text-xs font-medium uppercase tracking-[.16em] text-zinc-500">
+              {splatMode === "train"
+                ? "Trained Gaussian model"
+                : "Gaussian initialization preview"}
+            </p>
+            <p className="mt-2 text-xs leading-5 text-zinc-500">
+              {splatMode === "train"
+                ? "A real Gaussian Splatting optimizer (gsplat on CUDA) is installed. Training initializes one Gaussian per sparse point and minimizes an L1 + SSIM photometric loss against the captured frames with Adam."
+                : "No trained 3D Gaussian Splatting optimizer is installed here. This builds an initialization-only preview: reconstruction points with fixed Gaussian parameters and no training loop."}
+            </p>
+            {!splatReady ? (
+              <button type="button" onClick={() => void setupSplat()} disabled={splatInstalling} className="mt-3 w-full border border-zinc-700 p-2 text-xs text-zinc-300 disabled:opacity-50">
+                {splatInstalling ? "Setting up preview runtime…" : "Set up preview runtime (Python + numpy)"}
+              </button>
+            ) : (
+              <button type="button" onClick={() => void buildSplat()} disabled={splatStarting || splatActive || !status?.artifacts.hasPointCloud} title={!status?.artifacts.hasPointCloud ? "Run reconstruction first" : undefined} className="mt-3 w-full bg-zinc-100 p-2 text-xs font-medium text-black disabled:opacity-50">
+                {splatActive
+                  ? splatMode === "train"
+                    ? "Training model…"
+                    : "Building preview…"
+                  : splatJob?.phase === "failed" || splatJob?.phase === "cancelled"
+                    ? "Retry Gaussian model"
+                    : splatMode === "train"
+                      ? "Train Gaussian model"
+                      : "Build Gaussian initialization preview"}
+              </button>
+            )}
+            {splatCancellable ? (
+              <button type="button" onClick={() => void stopSplat()} disabled={stoppingSplat} className="mt-2 w-full border border-amber-700 p-2 text-xs text-amber-200 disabled:opacity-50">
+                {stoppingSplat ? "Stopping…" : "Stop training safely"}
+              </button>
+            ) : null}
+            {splatJob?.error ? <p className="mt-2 text-xs text-rose-300">{splatJob.error}</p> : null}
           </section>
         </div>
       ),
     }),
     [
+      buildTarget,
+      buildingDense,
       colmapReady,
+      environment,
+      environmentOk,
       error,
-      estimatedMinutes,
       frameCount,
       installing,
       job,
       jobActive,
+      jobCancellable,
+      mapper,
+      missingTools,
       mode,
       now,
-      quality,
+      preparation,
+      preparationBlocked,
+      report,
+      splatActive,
+      splatCancellable,
+      splatInstalling,
+      splatJob,
+      splatMode,
+      splatReady,
+      splatStarting,
+      splatTrained,
       starting,
+      stoppingColmap,
+      stoppingSplat,
+      status?.artifacts.hasDense,
       status?.artifacts.hasPointCloud,
       status?.artifacts.hasSplat,
+      status?.artifacts.splatTrained,
       status?.engines.colmapManaged,
+      status?.engines.glomapAvailable,
     ],
   );
   useStagePanels(panels);
 
   return (
     <section className="flex h-full min-h-0 flex-col bg-[#0b0b0e] text-zinc-100">
-      <header className="flex items-center justify-between border-b border-zinc-800 px-5 py-3">
-        <div>
-          <p className="text-xs font-medium uppercase tracking-[.16em] text-zinc-500">
-            Reconstruction workspace
-          </p>
-          <h1 className="mt-1 text-lg font-medium">
-            Point cloud → Gaussian Splat
-          </h1>
-        </div>
-        <span className="text-xs text-zinc-500">
-          {frameCount} prepared frames
-        </span>
-      </header>
-      <main className="grid min-h-0 flex-1 place-items-center overflow-auto p-8">
-        <div className="grid w-full max-w-3xl gap-5">
-          <section className="border border-zinc-800 bg-[#101014] p-5">
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-3">
-                <div
-                  className={`grid h-10 w-10 place-items-center rounded-full border border-zinc-700 ${jobActive ? "bg-sky-950/40" : "bg-zinc-900"}`}
-                >
-                  <ScanLine
-                    className={`h-5 w-5 ${jobActive ? "animate-pulse text-sky-200" : "text-zinc-300"}`}
-                  />
-                </div>
-                <div>
-                  <p className="text-sm font-medium">
-                    {job ? phaseTitle[job.phase] : "Ready to reconstruct"}
-                  </p>
-                  <p className="mt-0.5 text-xs text-zinc-500">
-                    {job
-                      ? `${elapsed(job.startedAt, now)} elapsed`
-                      : "Configure quality and launch when ready."}
-                  </p>
-                </div>
-              </div>
-              <div className="text-right">
-                <p className="font-mono text-2xl text-zinc-100">{progress}%</p>
-                <p className="text-[10px] uppercase tracking-[.16em] text-zinc-500">
-                  real task state
-                </p>
-              </div>
-            </div>
-            <div className="mt-5 h-2 overflow-hidden bg-zinc-800">
-              <div
-                className={`h-full transition-all duration-700 ${job?.phase === "failed" ? "bg-rose-400" : job?.phase === "complete" ? "bg-emerald-400" : "bg-sky-300"}`}
-                style={{ width: `${progress}%` }}
-              />
-            </div>
-            {job?.error ? (
-              <p className="mt-3 flex gap-2 text-xs leading-5 text-rose-200">
-                <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
-                {job.error}
-              </p>
-            ) : null}
-          </section>
-          <div className="grid gap-3 md:grid-cols-3">
-            <article
-              className={`border p-4 ${job && progress >= 28 ? "border-sky-700 bg-sky-950/20" : "border-zinc-800"}`}
-            >
-              <Gauge className="mb-3 h-4 w-4 text-zinc-300" />
-              <p className="text-sm">Image features</p>
-              <p className="mt-1 text-xs text-zinc-500">
-                SIFT features are extracted from each accepted frame.
-              </p>
-            </article>
-            <article
-              className={`border p-4 ${job && progress >= 58 ? "border-sky-700 bg-sky-950/20" : "border-zinc-800"}`}
-            >
-              <Box className="mb-3 h-4 w-4 text-zinc-300" />
-              <p className="text-sm">Camera graph</p>
-              <p className="mt-1 text-xs text-zinc-500">
-                Shared features become camera relationships and tracks.
-              </p>
-            </article>
-            <article
-              className={`border p-4 ${job && progress >= 84 ? "border-sky-700 bg-sky-950/20" : "border-zinc-800"}`}
-            >
-              <Sparkles className="mb-3 h-4 w-4 text-zinc-300" />
-              <p className="text-sm">Sparse cloud</p>
-              <p className="mt-1 text-xs text-zinc-500">
-                Solved cameras generate the first real 3D points.
-              </p>
-            </article>
+      <main className="flex min-h-0 flex-1 flex-col overflow-hidden">
+        <div className="flex items-center justify-between gap-2 border-b border-zinc-800 px-3 py-2">
+          <div className="flex gap-1">
+            {(["cloud", "splat"] as const).map((tab) => (
+              <button
+                key={tab}
+                type="button"
+                onClick={() => setViewTab(tab)}
+                className={`border px-3 py-1 text-[11px] uppercase tracking-[.16em] ${viewTab === tab ? "border-zinc-200 bg-zinc-200 text-black" : "border-zinc-700 text-zinc-500"}`}
+              >
+                {tab === "cloud" ? "Point cloud" : splatTrained ? "Trained Gaussians" : "Gaussian preview"}
+              </button>
+            ))}
           </div>
-          {(status?.artifacts.hasPointCloud || job?.phase === "complete") && (
-            <section className="overflow-hidden border border-zinc-800 bg-[#101014]">
-              <div className="flex items-center justify-between border-b border-zinc-800 px-3 py-2">
-                <div className="flex items-center gap-2 text-xs uppercase tracking-[.16em] text-zinc-400">
-                  <Sparkles className="h-3.5 w-3.5" />
-                  Sparse point cloud
-                </div>
-                <span className="text-[10px] uppercase tracking-[.16em] text-zinc-500">
-                  3D preview
-                </span>
-              </div>
-              <div className="min-h-[420px]">
-                <PointCloudViewer projectId={projectId} />
-              </div>
-            </section>
-          )}
-          {job ? (
-            <section className="overflow-hidden border border-zinc-800 bg-black/30">
-              <div className="flex items-center gap-2 border-b border-zinc-800 px-3 py-2 text-xs text-zinc-400">
-                <Terminal className="h-3.5 w-3.5" />
-                Live engine stream
-              </div>
-              <pre className="max-h-56 overflow-auto p-3 text-[11px] leading-5 text-zinc-400">
-                {job.logs.join("\n")}
-              </pre>
-            </section>
+          {viewTab === "cloud" && status?.artifacts.hasDense ? (
+            <div className="flex gap-1">
+              {(["sparse", "dense"] as const).map((source) => (
+                <button key={source} type="button" onClick={() => setCloudSource(source)} className={`border px-2 py-1 text-[10px] uppercase tracking-[.16em] ${cloudSource === source ? "border-zinc-200 text-zinc-100" : "border-zinc-700 text-zinc-500"}`}>
+                  {source}
+                </button>
+              ))}
+            </div>
           ) : (
-            <p className="flex items-center justify-center gap-2 text-xs text-zinc-500">
-              <Clock3 className="h-3.5 w-3.5" />
-              The live engine stream appears as soon as reconstruction begins.
-            </p>
+            <span className="text-[10px] uppercase tracking-[.16em] text-zinc-500">
+              {viewTab === "splat"
+                ? splatJob && splatActive ? splatJob.phase : splatTrained ? "trained" : "interactive"
+                : "3D preview"}
+            </span>
           )}
-          <div className="grid grid-cols-3 gap-2 text-left text-xs">
-            <div className="border border-zinc-800 p-3">
-              <Box className="mb-3 h-4 w-4 text-zinc-300" />
-              Sparse cloud
+        </div>
+        {job?.error ? (
+          <p className="flex gap-2 border-b border-rose-900 bg-rose-950/20 px-3 py-2 text-xs leading-5 text-rose-200">
+            <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+            {job.error}
+          </p>
+        ) : null}
+        <div className="min-h-0 flex-1">
+          {viewTab === "cloud" ? (
+            status?.artifacts.hasPointCloud || job?.phase === "complete" ? (
+              <PointCloudViewer projectId={projectId} source={cloudSource} className="h-full" />
+            ) : (
+              <div className="grid h-full place-items-center text-sm text-zinc-400">
+                No point cloud yet — build the sparse cloud to unlock this view.
+              </div>
+            )
+          ) : status?.artifacts.hasSplat ? (
+            <SplatViewer projectId={projectId} trained={splatTrained} className="h-full" />
+          ) : (
+            <div className="grid h-full place-items-center p-6 text-center text-sm text-zinc-400">
+              {splatActive
+                ? splatMode === "train" ? "Training model… watch the live stream on the right." : "Building splat…"
+                : splatJob?.error ?? "No Gaussian model yet — train one from the panel on the right."}
             </div>
-            <div className="border border-zinc-800 p-3">
-              <Sparkles className="mb-3 h-4 w-4 text-zinc-300" />
-              Gaussian Splat
-            </div>
-            <div className="border border-zinc-800 p-3">
-              <CheckCircle2 className="mb-3 h-4 w-4 text-zinc-300" />
-              Inspection
-            </div>
-          </div>
+          )}
         </div>
       </main>
     </section>

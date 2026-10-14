@@ -28,6 +28,7 @@ model Project {
   status      String   @default("CREATED")
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
+  lastAccessedAt DateTime?
 
   media Media[]
   isArchived Boolean   @default(false)

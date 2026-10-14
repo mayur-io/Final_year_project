@@ -9,9 +9,10 @@ import { projectStorageDirectory } from "@/lib/storage";
 export async function GET() {
   try {
     const projects = await prisma.project.findMany({
-      orderBy: {
-        createdAt: "desc",
-      },
+      orderBy: [
+        { lastAccessedAt: { sort: "desc", nulls: "last" } },
+        { createdAt: "desc" },
+      ],
     });
 
     return NextResponse.json(projects);
@@ -29,9 +30,30 @@ export async function POST(request: Request) {
   try {
     const body = await request.json();
 
+    const name = typeof body.name === "string" ? body.name.trim() : "";
+    if (!name) {
+      return NextResponse.json(
+        { error: "Project name is required." },
+        { status: 400 },
+      );
+    }
+    // Names must be unique (case-insensitive) across active and archived
+    // projects so the dashboard, archive, and storage never hold two
+    // same-named projects that are impossible to tell apart.
+    const clash = await prisma.project.findFirst({
+      where: { name: { equals: name, mode: "insensitive" } },
+      select: { id: true },
+    });
+    if (clash) {
+      return NextResponse.json(
+        { error: `A project named "${name}" already exists. Choose a different name.` },
+        { status: 409 },
+      );
+    }
+
     const project = await prisma.project.create({
       data: {
-        name: body.name,
+        name,
         description: body.description,
       },
     });

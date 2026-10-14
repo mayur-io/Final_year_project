@@ -5,7 +5,7 @@ import { Canvas, useFrame } from "@react-three/fiber";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { BackSide, DoubleSide, Group, Quaternion, SRGBColorSpace, Vector3, VideoTexture } from "three";
 
-export interface CoverageView { id: string; label: string; yaw: number; pitch: number; fieldOfView: number; locked?: boolean; }
+export interface CoverageView { id: string; label: string; yaw: number; pitch: number; fieldOfView: number; roll?: number; locked?: boolean; }
 export interface ProtectedRegion { yaw: number; pitch: number; radius: number; }
 
 function directionFor(yaw: number, pitch: number) { const yawRadians = yaw * Math.PI / 180; const pitchRadians = pitch * Math.PI / 180; return new Vector3(Math.sin(yawRadians) * Math.cos(pitchRadians), Math.sin(pitchRadians), Math.cos(yawRadians) * Math.cos(pitchRadians)); }

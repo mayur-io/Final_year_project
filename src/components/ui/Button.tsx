@@ -22,7 +22,7 @@ export default function Button({
   return (
     <button
       {...props}
-      className={`rounded-xl px-4 py-2 transition font-medium ${variants[variant]} ${className}`}
+      className={`rounded-xl px-4 py-2 transition font-medium disabled:cursor-not-allowed disabled:opacity-40 ${variants[variant]} ${className}`}
     />
   );
 }

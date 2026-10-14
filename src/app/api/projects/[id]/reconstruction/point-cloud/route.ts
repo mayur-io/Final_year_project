@@ -10,6 +10,7 @@ const MAX_POINTS = 20000;
 function parseTextPoints(contents: string) {
   const rows = contents.split(/\r?\n/).filter((line) => line.trim() !== "");
   const points: Array<[number, number, number, number, number, number]> = [];
+  let total = 0;
 
   for (const row of rows) {
     const values = row
@@ -31,13 +32,13 @@ function parseTextPoints(contents: string) {
       continue;
     }
 
-    points.push([x, y, z, r, g, b]);
-    if (points.length >= MAX_POINTS) {
-      break;
+    total += 1;
+    if (points.length < MAX_POINTS) {
+      points.push([x, y, z, r, g, b]);
     }
   }
 
-  return points;
+  return { points, total };
 }
 
 /**
@@ -59,10 +60,9 @@ function parseTextPoints(contents: string) {
  */
 const POINT_HEADER_BYTES = 51;
 const TRACK_ENTRY_BYTES = 8;
-
 function parseBinaryPoints(buffer: Buffer) {
   if (buffer.length < 8) {
-    return [] as Array<[number, number, number, number, number, number]>;
+    return { points: [] as Array<[number, number, number, number, number, number]>, total: 0 };
   }
 
   const count = Number(buffer.readBigUInt64LE(0));
@@ -96,15 +96,104 @@ function parseBinaryPoints(buffer: Buffer) {
     points.push([x, y, z, r, g, b]);
   }
 
-  return points;
+  return { points, total: count };
+}
+
+/** Minimal fused.ply reader (COLMAP ascii or binary_le): x/y/z + rgb. */
+function parsePlyPoints(buffer: Buffer) {
+  const headerEnd = buffer.indexOf("end_header");
+  if (headerEnd === -1) return { points: [], total: 0 };
+  const header = buffer.subarray(0, headerEnd).toString("ascii").split("\n");
+  const format = (header.find((line) => line.startsWith("format")) ?? "").split(/\s+/)[1] ?? "";
+  let count = 0;
+  const names: string[] = [];
+  const sizes: number[] = [];
+  for (const line of header) {
+    const parts = line.split(/\s+/);
+    if (parts[0] === "element" && parts[1] === "vertex") count = Number(parts[2]);
+    if (parts[0] === "property" && parts.length === 3) {
+      names.push(parts[2]);
+      sizes.push(parts[1] === "uchar" || parts[1] === "uint8" ? 1 : parts[1] === "double" ? 8 : 4);
+    }
+  }
+  const xi = names.indexOf("x");
+  const yi = names.indexOf("y");
+  const zi = names.indexOf("z");
+  let ci = ["red", "green", "blue"].map((key) => names.indexOf(key));
+  if (ci.some((index) => index === -1)) ci = ["r", "g", "b"].map((key) => names.indexOf(key));
+  if ([xi, yi, zi, ...ci].some((index) => index === -1) || !count) return { points: [], total: 0 };
+
+  const readRow = (values: number[]): [number, number, number, number, number, number] | null => {
+    const x = values[xi];
+    const y = values[yi];
+    const z = values[zi];
+    let [r, g, b] = ci.map((index) => values[index]);
+    if (Math.max(r, g, b) <= 1) {
+      r *= 255;
+      g *= 255;
+      b *= 255;
+    }
+    if ([x, y, z, r, g, b].some((value) => !Number.isFinite(value))) return null;
+    return [x, y, z, r, g, b];
+  };
+
+  const body = buffer.subarray(headerEnd + "end_header".length);
+  const points: Array<[number, number, number, number, number, number]> = [];
+  const stride = Math.max(1, Math.floor(count / MAX_POINTS));
+  if (format === "ascii") {
+    const lines = body.toString("utf8").split("\n");
+    for (let i = 0; i < count && points.length < MAX_POINTS; i += stride) {
+      const values = (lines[i] ?? "").trim().split(/\s+/).map(Number);
+      if (values.length < names.length) continue;
+      const point = readRow(values);
+      if (point) points.push(point);
+    }
+    return { points, total: count };
+  }
+  if (format === "binary_little_endian") {
+    const rowBytes = sizes.reduce((sum, size) => sum + size, 0);
+    const offset = body[0] === 10 ? 1 : 0;
+    for (let i = 0; i < count && points.length < MAX_POINTS; i += stride) {
+      const at = offset + i * rowBytes;
+      if (at + rowBytes > body.length) break;
+      const values: number[] = [];
+      let cursor = at;
+      for (const size of sizes) {
+        values.push(size === 1 ? body.readUInt8(cursor) : size === 8 ? body.readDoubleLE(cursor) : body.readFloatLE(cursor));
+        cursor += size;
+      }
+      const point = readRow(values);
+      if (point) points.push(point);
+    }
+    return { points, total: count };
+  }
+  return { points: [], total: 0 };
 }
 
 export async function GET(
-  _request: Request,
+  request: Request,
   { params }: { params: Promise<{ id: string }> },
 ) {
   try {
     const { id } = await params;
+    const source = new URL(request.url).searchParams.get("source") === "dense" ? "dense" : "sparse";
+    if (source === "dense") {
+      try {
+        const binary = await fs.readFile(
+          path.join(projectStorageDirectory(id), "reconstruction", "dense", "fused.ply"),
+        );
+        const { points, total } = parsePlyPoints(binary);
+        if (!points.length) {
+          return NextResponse.json(
+            { error: "The dense point cloud exists but contains no readable points." },
+            { status: 422 },
+          );
+        }
+        return NextResponse.json({ points, source, count: points.length, totalPoints: total, label: "Dense point cloud (COLMAP fused.ply)" });
+      } catch {
+        return NextResponse.json({ error: "Dense point cloud not found." }, { status: 404 });
+      }
+    }
     const reconstructionDirectory = path.join(
       projectStorageDirectory(id),
       "reconstruction",
@@ -117,15 +206,28 @@ export async function GET(
 
     try {
       const text = await fs.readFile(pointCloudText, "utf8");
-      return NextResponse.json({ points: parseTextPoints(text) });
+      const { points, total } = parseTextPoints(text);
+      if (!points.length) {
+        return NextResponse.json(
+          { error: "The sparse point cloud exists but contains no readable points." },
+          { status: 422 },
+        );
+      }
+      return NextResponse.json({ points, source, count: points.length, totalPoints: total, label: "Sparse point cloud (COLMAP)" });
     } catch {
       // Fall through to the binary format if the text export is not present.
     }
 
     try {
       const binary = await fs.readFile(pointCloudBinary);
-      const points = parseBinaryPoints(binary);
-      return NextResponse.json({ points });
+      const { points, total } = parseBinaryPoints(binary);
+      if (!points.length) {
+        return NextResponse.json(
+          { error: "The sparse point cloud exists but contains no readable points." },
+          { status: 422 },
+        );
+      }
+      return NextResponse.json({ points, source, count: points.length, totalPoints: total, label: "Sparse point cloud (COLMAP)" });
     } catch {
       return NextResponse.json(
         { error: "Sparse point cloud not found." },

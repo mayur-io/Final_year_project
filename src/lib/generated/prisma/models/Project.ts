@@ -31,6 +31,7 @@ export type ProjectMinAggregateOutputType = {
   status: string | null
   createdAt: Date | null
   updatedAt: Date | null
+  lastAccessedAt: Date | null
   isArchived: boolean | null
   archivedAt: Date | null
 }
@@ -42,6 +43,7 @@ export type ProjectMaxAggregateOutputType = {
   status: string | null
   createdAt: Date | null
   updatedAt: Date | null
+  lastAccessedAt: Date | null
   isArchived: boolean | null
   archivedAt: Date | null
 }
@@ -53,6 +55,7 @@ export type ProjectCountAggregateOutputType = {
   status: number
   createdAt: number
   updatedAt: number
+  lastAccessedAt: number
   isArchived: number
   archivedAt: number
   _all: number
@@ -66,6 +69,7 @@ export type ProjectMinAggregateInputType = {
   status?: true
   createdAt?: true
   updatedAt?: true
+  lastAccessedAt?: true
   isArchived?: true
   archivedAt?: true
 }
@@ -77,6 +81,7 @@ export type ProjectMaxAggregateInputType = {
   status?: true
   createdAt?: true
   updatedAt?: true
+  lastAccessedAt?: true
   isArchived?: true
   archivedAt?: true
 }
@@ -88,6 +93,7 @@ export type ProjectCountAggregateInputType = {
   status?: true
   createdAt?: true
   updatedAt?: true
+  lastAccessedAt?: true
   isArchived?: true
   archivedAt?: true
   _all?: true
@@ -172,6 +178,7 @@ export type ProjectGroupByOutputType = {
   status: string
   createdAt: Date
   updatedAt: Date
+  lastAccessedAt: Date | null
   isArchived: boolean
   archivedAt: Date | null
   _count: ProjectCountAggregateOutputType | null
@@ -204,6 +211,7 @@ export type ProjectWhereInput = {
   status?: Prisma.StringFilter<"Project"> | string
   createdAt?: Prisma.DateTimeFilter<"Project"> | Date | string
   updatedAt?: Prisma.DateTimeFilter<"Project"> | Date | string
+  lastAccessedAt?: Prisma.DateTimeNullableFilter<"Project"> | Date | string | null
   isArchived?: Prisma.BoolFilter<"Project"> | boolean
   archivedAt?: Prisma.DateTimeNullableFilter<"Project"> | Date | string | null
   media?: Prisma.MediaListRelationFilter
@@ -216,6 +224,7 @@ export type ProjectOrderByWithRelationInput = {
   status?: Prisma.SortOrder
   createdAt?: Prisma.SortOrder
   updatedAt?: Prisma.SortOrder
+  lastAccessedAt?: Prisma.SortOrderInput | Prisma.SortOrder
   isArchived?: Prisma.SortOrder
   archivedAt?: Prisma.SortOrderInput | Prisma.SortOrder
   media?: Prisma.MediaOrderByRelationAggregateInput
@@ -231,6 +240,7 @@ export type ProjectWhereUniqueInput = Prisma.AtLeast<{
   status?: Prisma.StringFilter<"Project"> | string
   createdAt?: Prisma.DateTimeFilter<"Project"> | Date | string
   updatedAt?: Prisma.DateTimeFilter<"Project"> | Date | string
+  lastAccessedAt?: Prisma.DateTimeNullableFilter<"Project"> | Date | string | null
   isArchived?: Prisma.BoolFilter<"Project"> | boolean
   archivedAt?: Prisma.DateTimeNullableFilter<"Project"> | Date | string | null
   media?: Prisma.MediaListRelationFilter
@@ -243,6 +253,7 @@ export type ProjectOrderByWithAggregationInput = {
   status?: Prisma.SortOrder
   createdAt?: Prisma.SortOrder
   updatedAt?: Prisma.SortOrder
+  lastAccessedAt?: Prisma.SortOrderInput | Prisma.SortOrder
   isArchived?: Prisma.SortOrder
   archivedAt?: Prisma.SortOrderInput | Prisma.SortOrder
   _count?: Prisma.ProjectCountOrderByAggregateInput
@@ -260,6 +271,7 @@ export type ProjectScalarWhereWithAggregatesInput = {
   status?: Prisma.StringWithAggregatesFilter<"Project"> | string
   createdAt?: Prisma.DateTimeWithAggregatesFilter<"Project"> | Date | string
   updatedAt?: Prisma.DateTimeWithAggregatesFilter<"Project"> | Date | string
+  lastAccessedAt?: Prisma.DateTimeNullableWithAggregatesFilter<"Project"> | Date | string | null
   isArchived?: Prisma.BoolWithAggregatesFilter<"Project"> | boolean
   archivedAt?: Prisma.DateTimeNullableWithAggregatesFilter<"Project"> | Date | string | null
 }
@@ -271,6 +283,7 @@ export type ProjectCreateInput = {
   status?: string
   createdAt?: Date | string
   updatedAt?: Date | string
+  lastAccessedAt?: Date | string | null
   isArchived?: boolean
   archivedAt?: Date | string | null
   media?: Prisma.MediaCreateNestedManyWithoutProjectInput
@@ -283,6 +296,7 @@ export type ProjectUncheckedCreateInput = {
   status?: string
   createdAt?: Date | string
   updatedAt?: Date | string
+  lastAccessedAt?: Date | string | null
   isArchived?: boolean
   archivedAt?: Date | string | null
   media?: Prisma.MediaUncheckedCreateNestedManyWithoutProjectInput
@@ -295,6 +309,7 @@ export type ProjectUpdateInput = {
   status?: Prisma.StringFieldUpdateOperationsInput | string
   createdAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
   updatedAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
+  lastAccessedAt?: Prisma.NullableDateTimeFieldUpdateOperationsInput | Date | string | null
   isArchived?: Prisma.BoolFieldUpdateOperationsInput | boolean
   archivedAt?: Prisma.NullableDateTimeFieldUpdateOperationsInput | Date | string | null
   media?: Prisma.MediaUpdateManyWithoutProjectNestedInput
@@ -307,6 +322,7 @@ export type ProjectUncheckedUpdateInput = {
   status?: Prisma.StringFieldUpdateOperationsInput | string
   createdAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
   updatedAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
+  lastAccessedAt?: Prisma.NullableDateTimeFieldUpdateOperationsInput | Date | string | null
   isArchived?: Prisma.BoolFieldUpdateOperationsInput | boolean
   archivedAt?: Prisma.NullableDateTimeFieldUpdateOperationsInput | Date | string | null
   media?: Prisma.MediaUncheckedUpdateManyWithoutProjectNestedInput
@@ -319,6 +335,7 @@ export type ProjectCreateManyInput = {
   status?: string
   createdAt?: Date | string
   updatedAt?: Date | string
+  lastAccessedAt?: Date | string | null
   isArchived?: boolean
   archivedAt?: Date | string | null
 }
@@ -330,6 +347,7 @@ export type ProjectUpdateManyMutationInput = {
   status?: Prisma.StringFieldUpdateOperationsInput | string
   createdAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
   updatedAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
+  lastAccessedAt?: Prisma.NullableDateTimeFieldUpdateOperationsInput | Date | string | null
   isArchived?: Prisma.BoolFieldUpdateOperationsInput | boolean
   archivedAt?: Prisma.NullableDateTimeFieldUpdateOperationsInput | Date | string | null
 }
@@ -341,6 +359,7 @@ export type ProjectUncheckedUpdateManyInput = {
   status?: Prisma.StringFieldUpdateOperationsInput | string
   createdAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
   updatedAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
+  lastAccessedAt?: Prisma.NullableDateTimeFieldUpdateOperationsInput | Date | string | null
   isArchived?: Prisma.BoolFieldUpdateOperationsInput | boolean
   archivedAt?: Prisma.NullableDateTimeFieldUpdateOperationsInput | Date | string | null
 }
@@ -352,6 +371,7 @@ export type ProjectCountOrderByAggregateInput = {
   status?: Prisma.SortOrder
   createdAt?: Prisma.SortOrder
   updatedAt?: Prisma.SortOrder
+  lastAccessedAt?: Prisma.SortOrder
   isArchived?: Prisma.SortOrder
   archivedAt?: Prisma.SortOrder
 }
@@ -363,6 +383,7 @@ export type ProjectMaxOrderByAggregateInput = {
   status?: Prisma.SortOrder
   createdAt?: Prisma.SortOrder
   updatedAt?: Prisma.SortOrder
+  lastAccessedAt?: Prisma.SortOrder
   isArchived?: Prisma.SortOrder
   archivedAt?: Prisma.SortOrder
 }
@@ -374,6 +395,7 @@ export type ProjectMinOrderByAggregateInput = {
   status?: Prisma.SortOrder
   createdAt?: Prisma.SortOrder
   updatedAt?: Prisma.SortOrder
+  lastAccessedAt?: Prisma.SortOrder
   isArchived?: Prisma.SortOrder
   archivedAt?: Prisma.SortOrder
 }
@@ -395,12 +417,12 @@ export type DateTimeFieldUpdateOperationsInput = {
   set?: Date | string
 }
 
-export type BoolFieldUpdateOperationsInput = {
-  set?: boolean
-}
-
 export type NullableDateTimeFieldUpdateOperationsInput = {
   set?: Date | string | null
+}
+
+export type BoolFieldUpdateOperationsInput = {
+  set?: boolean
 }
 
 export type ProjectCreateNestedOneWithoutMediaInput = {
@@ -424,6 +446,7 @@ export type ProjectCreateWithoutMediaInput = {
   status?: string
   createdAt?: Date | string
   updatedAt?: Date | string
+  lastAccessedAt?: Date | string | null
   isArchived?: boolean
   archivedAt?: Date | string | null
 }
@@ -435,6 +458,7 @@ export type ProjectUncheckedCreateWithoutMediaInput = {
   status?: string
   createdAt?: Date | string
   updatedAt?: Date | string
+  lastAccessedAt?: Date | string | null
   isArchived?: boolean
   archivedAt?: Date | string | null
 }
@@ -462,6 +486,7 @@ export type ProjectUpdateWithoutMediaInput = {
   status?: Prisma.StringFieldUpdateOperationsInput | string
   createdAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
   updatedAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
+  lastAccessedAt?: Prisma.NullableDateTimeFieldUpdateOperationsInput | Date | string | null
   isArchived?: Prisma.BoolFieldUpdateOperationsInput | boolean
   archivedAt?: Prisma.NullableDateTimeFieldUpdateOperationsInput | Date | string | null
 }
@@ -473,6 +498,7 @@ export type ProjectUncheckedUpdateWithoutMediaInput = {
   status?: Prisma.StringFieldUpdateOperationsInput | string
   createdAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
   updatedAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
+  lastAccessedAt?: Prisma.NullableDateTimeFieldUpdateOperationsInput | Date | string | null
   isArchived?: Prisma.BoolFieldUpdateOperationsInput | boolean
   archivedAt?: Prisma.NullableDateTimeFieldUpdateOperationsInput | Date | string | null
 }
@@ -515,6 +541,7 @@ export type ProjectSelect<ExtArgs extends runtime.Types.Extensions.InternalArgs 
   status?: boolean
   createdAt?: boolean
   updatedAt?: boolean
+  lastAccessedAt?: boolean
   isArchived?: boolean
   archivedAt?: boolean
   media?: boolean | Prisma.Project$mediaArgs<ExtArgs>
@@ -528,6 +555,7 @@ export type ProjectSelectCreateManyAndReturn<ExtArgs extends runtime.Types.Exten
   status?: boolean
   createdAt?: boolean
   updatedAt?: boolean
+  lastAccessedAt?: boolean
   isArchived?: boolean
   archivedAt?: boolean
 }, ExtArgs["result"]["project"]>
@@ -539,6 +567,7 @@ export type ProjectSelectUpdateManyAndReturn<ExtArgs extends runtime.Types.Exten
   status?: boolean
   createdAt?: boolean
   updatedAt?: boolean
+  lastAccessedAt?: boolean
   isArchived?: boolean
   archivedAt?: boolean
 }, ExtArgs["result"]["project"]>
@@ -550,11 +579,12 @@ export type ProjectSelectScalar = {
   status?: boolean
   createdAt?: boolean
   updatedAt?: boolean
+  lastAccessedAt?: boolean
   isArchived?: boolean
   archivedAt?: boolean
 }
 
-export type ProjectOmit<ExtArgs extends runtime.Types.Extensions.InternalArgs = runtime.Types.Extensions.DefaultArgs> = runtime.Types.Extensions.GetOmit<"id" | "name" | "description" | "status" | "createdAt" | "updatedAt" | "isArchived" | "archivedAt", ExtArgs["result"]["project"]>
+export type ProjectOmit<ExtArgs extends runtime.Types.Extensions.InternalArgs = runtime.Types.Extensions.DefaultArgs> = runtime.Types.Extensions.GetOmit<"id" | "name" | "description" | "status" | "createdAt" | "updatedAt" | "lastAccessedAt" | "isArchived" | "archivedAt", ExtArgs["result"]["project"]>
 export type ProjectInclude<ExtArgs extends runtime.Types.Extensions.InternalArgs = runtime.Types.Extensions.DefaultArgs> = {
   media?: boolean | Prisma.Project$mediaArgs<ExtArgs>
   _count?: boolean | Prisma.ProjectCountOutputTypeDefaultArgs<ExtArgs>
@@ -574,6 +604,7 @@ export type $ProjectPayload<ExtArgs extends runtime.Types.Extensions.InternalArg
     status: string
     createdAt: Date
     updatedAt: Date
+    lastAccessedAt: Date | null
     isArchived: boolean
     archivedAt: Date | null
   }, ExtArgs["result"]["project"]>
@@ -1006,6 +1037,7 @@ export interface ProjectFieldRefs {
   readonly status: Prisma.FieldRef<"Project", 'String'>
   readonly createdAt: Prisma.FieldRef<"Project", 'DateTime'>
   readonly updatedAt: Prisma.FieldRef<"Project", 'DateTime'>
+  readonly lastAccessedAt: Prisma.FieldRef<"Project", 'DateTime'>
   readonly isArchived: Prisma.FieldRef<"Project", 'Boolean'>
   readonly archivedAt: Prisma.FieldRef<"Project", 'DateTime'>
 }

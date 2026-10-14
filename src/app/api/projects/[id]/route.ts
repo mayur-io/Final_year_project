@@ -10,10 +10,31 @@ export async function PATCH(
     const { id } = await params;
     const { name, description } = await request.json();
 
+    const trimmed = typeof name === "string" ? name.trim() : "";
+    if (!trimmed) {
+      return NextResponse.json(
+        { error: "Project name is required." },
+        { status: 400 },
+      );
+    }
+    const clash = await prisma.project.findFirst({
+      where: {
+        name: { equals: trimmed, mode: "insensitive" },
+        id: { not: id },
+      },
+      select: { id: true },
+    });
+    if (clash) {
+      return NextResponse.json(
+        { error: `A project named "${trimmed}" already exists. Choose a different name.` },
+        { status: 409 },
+      );
+    }
+
     const project = await prisma.project.update({
       where: { id },
       data: {
-        name,
+        name: trimmed,
         description,
       },
     });

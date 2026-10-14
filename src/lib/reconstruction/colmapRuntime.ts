@@ -44,6 +44,92 @@ export async function resolveColmapRuntime() {
   return managed ? { path: managed, managed: true } : null;
 }
 
+const MANAGED_GLOMAP_DIRECTORY = storagePath("runtime", "glomap");
+
+async function findGlomapExecutable(directory: string): Promise<string | null> {
+  let entries: Dirent[];
+  try { entries = await fs.readdir(directory, { withFileTypes: true }); } catch { return null; }
+  for (const entry of entries) {
+    const candidate = path.join(directory, entry.name);
+    if (entry.isDirectory()) {
+      const nested = await findGlomapExecutable(candidate);
+      if (nested) return nested;
+    } else if (entry.name.toLowerCase() === "glomap.exe") return candidate;
+  }
+  return null;
+}
+
+/**
+ * Resolve the GLOMAP global-SfM binary. Explicit `GLOMAP_BINARY_PATH` wins;
+ * otherwise the managed copy under `<storage>/runtime/glomap` is used.
+ * Returns null when GLOMAP is not installed — callers fall back to COLMAP
+ * incremental mapping.
+ */
+export async function resolveGlomapRuntime() {
+  const configured = process.env.GLOMAP_BINARY_PATH;
+  if (configured && await fs.access(configured).then(() => true).catch(() => false)) return { path: configured, managed: false };
+  const managed = await findGlomapExecutable(MANAGED_GLOMAP_DIRECTORY);
+  return managed ? { path: managed, managed: true } : null;
+}
+
+let glomapCompatibility: boolean | null = null;
+let glomapProbeInFlight: Promise<boolean> | null = null;
+
+/**
+ * Verified on this machine (2026-10-11): the managed GLOMAP build cannot open
+ * databases written by the managed COLMAP (3.12-era rigs/frames schema) —
+ * not even a fresh empty one — so probing with a real project database is
+ * unnecessary. A cheap empty-DB probe decides compatibility, cached per
+ * server process so a future compatible build lights up automatically.
+ */
+export async function isGlomapCompatible(colmapPath: string, glomapPath: string): Promise<boolean> {
+  if (glomapCompatibility !== null) return glomapCompatibility;
+  if (glomapProbeInFlight) return glomapProbeInFlight;
+  glomapProbeInFlight = (async () => {
+    const os = await import("os");
+    const probeDir = path.join(os.tmpdir(), "splato-glomap-compat");
+    try {
+      await fs.rm(probeDir, { recursive: true, force: true });
+      await fs.mkdir(probeDir, { recursive: true });
+      const probeDb = path.join(probeDir, "probe.db");
+      const probeImages = path.join(probeDir, "images");
+      await fs.mkdir(probeImages, { recursive: true });
+      const created = await run(colmapPath, ["database_creator", "--database_path", probeDb]);
+      if (!created) {
+        glomapCompatibility = false;
+        return false;
+      }
+      const output = await new Promise<string>((resolve) => {
+        const child = spawn(glomapPath, [
+          "mapper",
+          "--database_path", probeDb,
+          "--image_path", probeImages,
+          "--output_path", path.join(probeDir, "out"),
+        ], { windowsHide: true });
+        let stderr = "";
+        child.stderr.on("data", (chunk: Buffer) => { stderr += chunk.toString(); });
+        child.stdout.on("data", (chunk: Buffer) => { stderr += chunk.toString(); });
+        child.on("error", () => resolve("SPAWN_ERROR"));
+        child.on("close", () => resolve(stderr));
+      });
+      // A compatible build gets past opening the database and then complains
+      // about the empty input; an incompatible one dies in the SQLite layer
+      // (or crashes outright after the open failure).
+      glomapCompatibility =
+        output !== "SPAWN_ERROR" &&
+        !/failed to open database|sql logic error/i.test(output);
+      return glomapCompatibility;
+    } catch {
+      glomapCompatibility = false;
+      return false;
+    } finally {
+      await fs.rm(probeDir, { recursive: true, force: true }).catch(() => undefined);
+      glomapProbeInFlight = null;
+    }
+  })();
+  return glomapProbeInFlight;
+}
+
 async function hasNvidiaGpu() { return run("nvidia-smi", ["--query-gpu=name", "--format=csv,noheader"]); }
 
 export async function installManagedColmap() {

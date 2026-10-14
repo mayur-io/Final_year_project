@@ -4,14 +4,14 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { ReactNode } from "react";
 
-import EngineStatus from "@/components/engine/EngineStatus";
+import RuntimeStatus from "@/components/runtime/RuntimeStatus";
 
 type Props = {
   children: ReactNode;
 };
 
 export default function WorkspaceLayout({ children }: Props) {
-    const pathname = usePathname();
+  const pathname = usePathname();
   return (
     <div className="min-h-screen flex bg-background text-foreground">
       <aside className="w-64 shrink-0 border-r border-white/10 px-8 py-10">
@@ -20,7 +20,7 @@ export default function WorkspaceLayout({ children }: Props) {
         </div>
 
         <div className="mb-8">
-          <EngineStatus />
+          <RuntimeStatus />
         </div>
 
         <nav className="space-y-2">

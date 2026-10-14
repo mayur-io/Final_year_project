@@ -10,6 +10,8 @@ export interface FrameFilterResult {
   blurredFrames: number;
   duplicateFrames: number;
   lowDetailFrames: number;
+  skyFrames: number;
+  outlierFrames: number;
   frames: string[];
   streams: Record<
     string,
@@ -148,6 +150,50 @@ function meanAbsoluteDifference(a: Buffer, b: Buffer): number {
   return total / length;
 }
 
+/**
+ * Mean absolute difference between two image files (96×54 thumbs).
+ * Used for static-capture detection: a camera that never translates
+ * has zero baseline and no SfM pipeline can solve it.
+ */
+export async function frameDifference(firstPath: string, secondPath: string): Promise<number | null> {
+  try {
+    const [a, b] = await Promise.all([
+      sharp(firstPath).greyscale().resize(96, 54, { fit: "fill" }).raw().toBuffer(),
+      sharp(secondPath).greyscale().resize(96, 54, { fit: "fill" }).raw().toBuffer(),
+    ]);
+    return meanAbsoluteDifference(a, b);
+  } catch {
+    return null;
+  }
+}
+/**
+ * Sky / cloud frames never triangulate — sky is at infinity, clouds move.
+ * The 96×54 comparison buffer is enough: a sky-dominated frame has a bright,
+ * near-uniform top third (low variance, high mean). Textureless frames
+ * (blank walls, overexposure) have near-zero variance overall. Both poison
+ * SfM matching and become splat floaters, so reject them here.
+ */
+function bufferStats(region: Buffer): { mean: number; variance: number } {
+  if (region.length === 0) return { mean: 0, variance: 0 };
+  let sum = 0;
+  for (let i = 0; i < region.length; i += 1) sum += region[i];
+  const mean = sum / region.length;
+  let sq = 0;
+  for (let i = 0; i < region.length; i += 1) sq += (region[i] - mean) * (region[i] - mean);
+  return { mean, variance: sq / region.length };
+}
+
+function isSkyDominated(comparison: Buffer): boolean {
+  // 96 wide × 54 tall, row-major. Top third = rows 0..17.
+  const top = comparison.subarray(0, 96 * 18);
+  const { mean, variance } = bufferStats(top);
+  return mean > 150 && variance < 220;
+}
+
+function isTextureless(comparison: Buffer): boolean {
+  return bufferStats(comparison).variance < 60;
+}
+
 async function clearImages(directory: string) {
   await fs.mkdir(directory, { recursive: true });
   const existing = await fs.readdir(directory);
@@ -181,6 +227,8 @@ export async function filterFrames(options: FilterFramesOptions): Promise<FrameF
   let blurry = 0;
   let duplicates = 0;
   let lowDetail = 0;
+  let skyFrames = 0;
+  let outlierFrames = 0;
   const byStream: FrameFilterResult["streams"] = {};
 
   for (const [stream, names] of streams) {
@@ -220,9 +268,25 @@ export async function filterFrames(options: FilterFramesOptions): Promise<FrameF
         continue;
       }
 
+      // Low-detail frames are unreliable for SfM/splat matching — reject, don't keep.
       if (metric.sharpness < blurThreshold) {
+        rejected.push({ frame: metric.name, reason: "low_detail" });
         lowDetail += 1;
         streamLowDetail += 1;
+        continue;
+      }
+
+      // A frame with a large sky area is retained when it still carries usable
+      // scene detail — a building or room against blue sky is a valid
+      // reconstruction frame. Only a genuinely textureless frame (blank wall,
+      // blown-out sky with no detail) is rejected. This brightness rule is an
+      // observation, never a semantic sky mask.
+      if (isTextureless(metric.comparison)) {
+        rejected.push({ frame: metric.name, reason: "textureless" });
+        continue;
+      }
+      if (isSkyDominated(metric.comparison)) {
+        skyFrames += 1;
       }
 
       eligible.push({ stream, name: metric.name });
@@ -288,6 +352,23 @@ export async function filterFrames(options: FilterFramesOptions): Promise<FrameF
     }
   }
 
+  // Outlier prune: drop frames that don't belong to the dominant scene.
+  // Previously validateImageSet() existed but was never called anywhere.
+  if (accepted.length >= 10) {
+    const validation = await validateSet(options.outputDirectory, 0.48);
+    if (validation.accepted.length >= 10 && validation.rejected.length > 0) {
+      const rejectedSet = new Set(validation.rejected);
+      for (const name of validation.rejected) {
+        await fs.rm(path.join(options.outputDirectory, name), { force: true });
+        rejected.push({ frame: name, reason: "scene_outlier" });
+        outlierFrames += 1;
+      }
+      for (let i = accepted.length - 1; i >= 0; i -= 1) {
+        if (rejectedSet.has(accepted[i])) accepted.splice(i, 1);
+      }
+    }
+  }
+
   const report: FrameFilterResult = {
     sampledFrames: entries.length,
     acceptedFrames: accepted.length,
@@ -295,6 +376,8 @@ export async function filterFrames(options: FilterFramesOptions): Promise<FrameF
     blurredFrames: blurry,
     duplicateFrames: duplicates,
     lowDetailFrames: lowDetail,
+    skyFrames,
+    outlierFrames,
     frames: accepted,
     streams: byStream,
     rejected,
@@ -447,4 +530,123 @@ async function validateSet(directory: string, threshold: number): Promise<ImageS
 
 export function validateImageSet(directory: string): Promise<ImageSetValidationResult> {
   return validateSet(directory, 0.48);
+}
+
+/**
+ * Equirect wrap test: in a true 360 frame the left and right edges are
+ * adjacent on the sphere, so downscaled edge columns look alike.
+ * Perspective clips almost never match at opposite edges.
+ * PowerPark-style 16:9 equirect (squeezed, not 2:1) passes this.
+ */
+export async function hasEquirectWrap(filePath: string): Promise<boolean> {
+  try {
+    const { data, info } = await sharp(filePath)
+      .greyscale()
+      .resize(128, 64, { fit: "fill", kernel: "cubic" })
+      .raw()
+      .toBuffer({ resolveWithObject: true });
+    const width = info.width;
+    let total = 0;
+    let samples = 0;
+    for (let y = 0; y < info.height; y += 1) {
+      for (let x = 0; x < 4; x += 1) {
+        total += Math.abs(data[y * width + x] - data[y * width + (width - 1 - x)]);
+        samples += 1;
+      }
+    }
+    return total / samples < 20;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Single-frame quality score for the post-conversion gate: one sampled frame
+ * per projected view is scored before extraction burns minutes on it.
+ * Returns null when the frame is unreadable.
+ */
+export async function scoreFrame(filePath: string): Promise<{
+  sharpness: number;
+  skyDominated: boolean;
+  textureless: boolean;
+} | null> {
+  const metric = await measureFrame(filePath, path.basename(filePath));
+  if (!metric) return null;
+  return {
+    sharpness: metric.sharpness,
+    skyDominated: isSkyDominated(metric.comparison),
+    textureless: isTextureless(metric.comparison),
+  };
+}
+
+export interface SequenceCoverageResult {
+  /** How many accepted frames were sampled for the measurement. */
+  sampled: number;
+  /** Mean absolute difference (0–255) between consecutive sampled frames. */
+  meanDifference: number;
+  /** Mean colour-histogram correlation between consecutive sampled frames. */
+  meanSimilarity: number;
+  /** Viewpoint change across the sequence: `insufficient` means little or no parallax. */
+  coverage: "insufficient" | "plausible";
+  /** Frame-to-frame scene continuity: `insufficient` means neighbours look unrelated. */
+  overlap: "insufficient" | "plausible";
+}
+
+const MIN_VIEWPOINT_DIFFERENCE = 1.0;
+const MIN_NEIGHBOUR_SIMILARITY = 0.25;
+
+/**
+ * Validates that an accepted sequence actually contains viewpoint change
+ * (parallax) and frame-to-frame continuity (overlap) — the two properties the
+ * Scope requires before reconstruction. It measures consecutive *sampled*
+ * accepted frames in capture order:
+ *
+ *   difference  → how much the view moved (parallax / viewpoint diversity)
+ *   similarity  → whether neighbours still share the same scene (overlap)
+ *
+ * Both are cheap 96×54 greyscale / 8×8×8 colour-histogram proxies, not a
+ * semantic camera solve, so they are surfaced as evidence and used directly
+ * only for the unambiguous "no viewpoint change" case. A near-zero mean
+ * difference means a static or duplicate capture that no SfM pipeline can solve.
+ */
+export async function analyzeSequenceCoverage(
+  directory: string,
+  filenames: string[],
+  maxSamples = 60,
+): Promise<SequenceCoverageResult | null> {
+  const names = filenames.length <= maxSamples
+    ? [...filenames]
+    : evenIndices(filenames.length, maxSamples).map((index) => filenames[index]);
+  if (names.length < 2) return null;
+
+  const samples = await mapWithConcurrency(names, 4, async (name) => {
+    const filePath = path.join(directory, name);
+    const [comparison, signature] = await Promise.all([
+      sharp(filePath).greyscale().resize(96, 54, { fit: "fill", kernel: "cubic" }).raw().toBuffer().catch(() => null),
+      colorSignature(filePath),
+    ]);
+    return comparison && signature ? { comparison, signature } : null;
+  });
+  const valid = samples.filter(
+    (sample): sample is { comparison: Buffer; signature: Float64Array } => sample !== null,
+  );
+  if (valid.length < 2) return null;
+
+  let differenceTotal = 0;
+  let similarityTotal = 0;
+  for (let index = 1; index < valid.length; index += 1) {
+    differenceTotal += meanAbsoluteDifference(valid[index - 1].comparison, valid[index].comparison);
+    similarityTotal += correlation(valid[index - 1].signature, valid[index].signature);
+  }
+  const pairs = valid.length - 1;
+  const meanDifference = differenceTotal / pairs;
+  const meanSimilarity = similarityTotal / pairs;
+
+  return {
+    sampled: valid.length,
+    meanDifference: round(meanDifference, 3),
+    meanSimilarity: round(meanSimilarity, 3),
+    coverage: meanDifference < MIN_VIEWPOINT_DIFFERENCE ? "insufficient" : "plausible",
+    overlap: meanSimilarity < MIN_NEIGHBOUR_SIMILARITY ? "insufficient" : "plausible",
+  };
 }

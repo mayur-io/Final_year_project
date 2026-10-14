@@ -7,6 +7,8 @@ import * as THREE from "three";
 
 interface PointCloudViewerProps {
   projectId: string;
+  source?: "sparse" | "dense";
+  className?: string;
 }
 
 function PointCloudMesh({
@@ -54,7 +56,7 @@ function PointCloudMesh({
   );
 }
 
-export default function PointCloudViewer({ projectId }: PointCloudViewerProps) {
+export default function PointCloudViewer({ projectId, source = "sparse", className = "h-[420px]" }: PointCloudViewerProps) {
   const [points, setPoints] = useState<
     Array<[number, number, number, number, number, number]>
   >([]);
@@ -65,7 +67,7 @@ export default function PointCloudViewer({ projectId }: PointCloudViewerProps) {
     async function load() {
       try {
         const response = await fetch(
-          `/api/projects/${projectId}/reconstruction/point-cloud`,
+          `/api/projects/${projectId}/reconstruction/point-cloud?source=${source}`,
         );
         if (!response.ok) {
           throw new Error("Point cloud could not be loaded.");
@@ -92,11 +94,11 @@ export default function PointCloudViewer({ projectId }: PointCloudViewerProps) {
     }
 
     void load();
-  }, [projectId]);
+  }, [projectId, source]);
 
   if (loading) {
     return (
-      <div className="grid h-[420px] place-items-center border border-zinc-800 bg-[#0f1014] text-sm text-zinc-400">
+      <div className={`grid ${className} place-items-center border border-zinc-800 bg-[#0f1014] text-sm text-zinc-400`}>
         Loading sparse point cloud…
       </div>
     );
@@ -104,14 +106,14 @@ export default function PointCloudViewer({ projectId }: PointCloudViewerProps) {
 
   if (error || points.length === 0) {
     return (
-      <div className="grid h-[420px] place-items-center border border-zinc-800 bg-[#0f1014] text-sm text-zinc-400">
+      <div className={`grid ${className} place-items-center border border-zinc-800 bg-[#0f1014] text-sm text-zinc-400`}>
         {error ?? "No point cloud data available yet."}
       </div>
     );
   }
 
   return (
-    <div className="relative h-[420px] overflow-hidden border border-zinc-800 bg-[#0f1014]">
+    <div className={`relative ${className} overflow-hidden border border-zinc-800 bg-[#0f1014]`}>
       <Canvas camera={{ position: [0, 0, 8], fov: 50 }} dpr={[1, 2]}>
         <color attach="background" args={["#0b0b0e"]} />
         <ambientLight intensity={1.25} />
